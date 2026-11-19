@@ -11,7 +11,11 @@ const MAX_ITEMS = 1000;
 const MAX_NAME = 60;
 const MAX_DEVICE_NAME = 40;
 const MAX_DEVICES = 500;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+/** The group every existing clipboard/note moved into; visible to all devices; can't be deleted. */
+const DEFAULT_GROUP = 'grp_everyone';
+const MAX_GROUPS = 50;
+const ACCESS = ['all', 'members'];
 const WEB_DEVICE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const ROLES = ['host', 'member', 'viewer'];
 const MAX_NOTES = 2000;
@@ -112,7 +116,7 @@ class Store extends EventEmitter {
     }
     if (!this.db) {
       this.db = { version: SCHEMA_VERSION, clipboards: [] };
-      this._create('General');
+      this._create('General', DEFAULT_GROUP);
     }
     this._migrate();
     this.pruneDevices();
@@ -122,9 +126,11 @@ class Store extends EventEmitter {
   }
 
   /**
-   * Upgrade older databases in place. A one-time copy of the original v1 file
-   * is kept as db.v1-backup.json. Databases from a newer ClipBox are refused
-   * rather than risk silently dropping data.
+   * Upgrade older databases in place, keeping a one-time copy of the original
+   * file (db.v1-backup.json / db.v2-backup.json). Databases from a newer
+   * ClipBox are refused rather than risk silently dropping data.
+   *  v2: server identity, shared notes, devices
+   *  v3: groups — everything existing moves into the "Everyone" group
    */
   _migrate() {
     const v = Number(this.db.version) || 1;
@@ -139,11 +145,27 @@ class Store extends EventEmitter {
       if (!fs.existsSync(backup) && fs.existsSync(this.file)) fs.copyFileSync(this.file, backup);
       console.log('[store] upgraded database to schema v2 (backup: db.v1-backup.json)');
     }
+    if (v === 2) {
+      const backup = path.join(this.dir, 'db.v2-backup.json');
+      if (!fs.existsSync(backup) && fs.existsSync(this.file)) fs.copyFileSync(this.file, backup);
+      console.log('[store] upgraded database to schema v3: groups (backup: db.v2-backup.json)');
+    }
     this.db.version = SCHEMA_VERSION;
     if (!this.db.serverId) this.db.serverId = `srv_${newId()}`;
     if (!this.db.serverName) this.db.serverName = os.hostname();
     if (!Array.isArray(this.db.notes)) this.db.notes = [];
     if (!Array.isArray(this.db.devices)) this.db.devices = [];
+    if (!Array.isArray(this.db.groups)) this.db.groups = [];
+    if (!this.db.groups.some((g) => g.id === DEFAULT_GROUP)) {
+      this.db.groups.unshift({ id: DEFAULT_GROUP, name: 'Everyone', access: 'all', members: [], createdAt: now() });
+    }
+    const known = new Set(this.db.groups.map((g) => g.id));
+    for (const c of this.db.clipboards) if (!known.has(c.groupId)) c.groupId = DEFAULT_GROUP;
+    for (const n of this.db.notes) if (!known.has(n.groupId)) n.groupId = DEFAULT_GROUP;
+    for (const g of this.db.groups) {
+      if (!Array.isArray(g.members)) g.members = [];
+      if (!this.db.clipboards.some((c) => c.groupId === g.id)) this._create('General', g.id);
+    }
   }
 
   // ── persistence ──────────────────────────────────────────────
@@ -152,7 +174,8 @@ class Store extends EventEmitter {
     this._dirty = true;
     clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => this._save(), 150);
-    this.emit('change', { ...event, rev: this.rev, boot: this.boot, order: this.db.clipboards.map((c) => c.id) });
+    const groupId = event.groupId ?? event.clipboard?.groupId ?? event.note?.groupId ?? null;
+    this.emit('change', { ...event, groupId, rev: this.rev, boot: this.boot, order: this.db.clipboards.map((c) => c.id) });
   }
 
   async _save() {
@@ -284,7 +307,12 @@ class Store extends EventEmitter {
     const before = this.db.devices.length;
     this.db.devices = this.db.devices.filter((d) => d.id !== id);
     if (this.db.devices.length === before) throw new ValidationError('Device not found.', 404);
-    this._persist();
+    if (this.db.groups.some((g) => g.members.includes(id))) {
+      for (const g of this.db.groups) g.members = g.members.filter((m) => m !== id);
+      this._changed({ type: 'groups' });
+    } else {
+      this._persist();
+    }
   }
 
   /** Update last-seen at most once a minute to avoid needless writes. */
@@ -301,7 +329,11 @@ class Store extends EventEmitter {
     const cutoff = now() - ttl;
     const before = this.db.devices.length;
     this.db.devices = this.db.devices.filter((d) => d.tokenHash || d.role === 'host' || d.lastSeenAt >= cutoff);
-    if (this.db.devices.length !== before) this._persist();
+    if (this.db.devices.length !== before) {
+      const alive = new Set(this.db.devices.map((d) => d.id));
+      for (const g of this.db.groups || []) g.members = g.members.filter((m) => alive.has(m));
+      this._persist();
+    }
   }
 
   // ── shared notes ─────────────────────────────────────────────
@@ -321,8 +353,9 @@ class Store extends EventEmitter {
   }
 
   /** @param author {{id, name}|null} */
-  createNote(fields, author) {
+  createNote(fields, author, groupId = DEFAULT_GROUP) {
     if (this.db.notes.length >= MAX_NOTES) throw new ValidationError(`Too many shared notes (max ${MAX_NOTES}).`, 409);
+    this.getGroup(groupId);
     const title = cleanTitle(fields.title);
     const body = this._checkBody(fields.body);
     if (!title && !body.trim()) throw new ValidationError('A note needs a title or some text.');
@@ -341,6 +374,7 @@ class Store extends EventEmitter {
       updatedAt: t,
       updatedBy: author?.id || null,
       updatedByName: author?.name || 'Unknown device',
+      groupId,
     };
     this.db.notes.push(note);
     this._changed({ type: 'note', note });
@@ -379,14 +413,91 @@ class Store extends EventEmitter {
   }
 
   deleteNote(id) {
-    this.getNote(id);
+    const n = this.getNote(id);
     this.db.notes = this.db.notes.filter((x) => x.id !== id);
-    this._changed({ type: 'note-remove', id });
+    this._changed({ type: 'note-remove', id, groupId: n.groupId });
+  }
+
+  // ── groups ───────────────────────────────────────────────────
+  get defaultGroupId() {
+    return DEFAULT_GROUP;
+  }
+
+  listGroups() {
+    return this.db.groups;
+  }
+
+  getGroup(id) {
+    const g = this.db.groups.find((x) => x.id === id);
+    if (!g) throw new ValidationError('Group not found.', 404);
+    return g;
+  }
+
+  createGroup(name, access = 'members') {
+    if (this.db.groups.length >= MAX_GROUPS) throw new ValidationError(`Too many groups (max ${MAX_GROUPS}).`, 409);
+    const g = {
+      id: `grp_${newId()}`,
+      name: cleanName(name),
+      access: ACCESS.includes(access) ? access : 'members',
+      members: [],
+      createdAt: now(),
+    };
+    this.db.groups.push(g);
+    this._create('General', g.id);
+    this._changed({ type: 'groups' });
+    return g;
+  }
+
+  /** @param members device ids (replaces the list); unknown ids are ignored */
+  updateGroup(id, { name, access, members }) {
+    const g = this.getGroup(id);
+    if (name !== undefined) g.name = cleanName(name);
+    if (access !== undefined) {
+      if (!ACCESS.includes(access)) throw new ValidationError('Access must be "all" or "members".');
+      if (id === DEFAULT_GROUP && access !== 'all') throw new ValidationError('The Everyone group is always visible to every device.');
+      g.access = access;
+    }
+    if (members !== undefined) {
+      if (!Array.isArray(members)) throw new ValidationError('Members must be a list of device ids.');
+      const known = new Set(this.db.devices.map((d) => d.id));
+      g.members = [...new Set(members.filter((m) => typeof m === 'string' && known.has(m)))];
+    }
+    this._changed({ type: 'groups' });
+    return g;
+  }
+
+  addMember(groupId, deviceId) {
+    const g = this.getGroup(groupId);
+    if (!g.members.includes(deviceId)) {
+      g.members.push(deviceId);
+      this._changed({ type: 'groups' });
+    }
+    return g;
+  }
+
+  /** Deletes the group with all its clipboards (and files) and shared notes. */
+  deleteGroup(id) {
+    if (id === DEFAULT_GROUP) throw new ValidationError("The Everyone group can't be deleted.");
+    this.getGroup(id);
+    for (const c of this.db.clipboards.filter((x) => x.groupId === id)) this._removeFiles(c.items);
+    this.db.clipboards = this.db.clipboards.filter((x) => x.groupId !== id);
+    this.db.notes = this.db.notes.filter((x) => x.groupId !== id);
+    this.db.groups = this.db.groups.filter((x) => x.id !== id);
+    this._changed({ type: 'groups' });
   }
 
   // ── queries ──────────────────────────────────────────────────
-  snapshot() {
-    return { rev: this.rev, boot: this.boot, clipboards: this.db.clipboards, notes: this.db.notes };
+  /** State for one device: only groups it may see (and their clipboards and notes). */
+  snapshot(canSeeGroup = () => true) {
+    const groups = this.db.groups.filter(canSeeGroup);
+    const ids = new Set(groups.map((g) => g.id));
+    return {
+      rev: this.rev,
+      boot: this.boot,
+      groups,
+      clipboards: this.db.clipboards.filter((c) => ids.has(c.groupId)),
+      notes: this.db.notes.filter((n) => ids.has(n.groupId)),
+    };
   }
 
   get(id) {
@@ -404,16 +515,17 @@ class Store extends EventEmitter {
   }
 
   // ── clipboard operations ─────────────────────────────────────
-  _create(name) {
+  _create(name, groupId) {
     const t = now();
-    const c = { id: newId(), name: cleanName(name), createdAt: t, updatedAt: t, items: [] };
+    const c = { id: newId(), name: cleanName(name), groupId, createdAt: t, updatedAt: t, items: [] };
     this.db.clipboards.push(c);
     return c;
   }
 
-  createClipboard(name) {
+  createClipboard(name, groupId = DEFAULT_GROUP) {
     if (this.db.clipboards.length >= MAX_CLIPBOARDS) throw new ValidationError('Too many clipboards.');
-    const c = this._create(name);
+    this.getGroup(groupId);
+    const c = this._create(name, groupId);
     this._changed({ type: 'clipboard', clipboard: c });
     return c;
   }
@@ -439,11 +551,12 @@ class Store extends EventEmitter {
     const c = this.get(id);
     this._removeFiles(c.items);
     this.db.clipboards = this.db.clipboards.filter((x) => x.id !== id);
-    if (this.db.clipboards.length === 0) {
-      const fresh = this._create('General');
+    // Every group keeps at least one clipboard.
+    if (!this.db.clipboards.some((x) => x.groupId === c.groupId)) {
+      const fresh = this._create('General', c.groupId);
       this._changed({ type: 'clipboard', clipboard: fresh });
     }
-    this._changed({ type: 'remove', id });
+    this._changed({ type: 'remove', id, groupId: c.groupId });
   }
 
   // ── item operations ──────────────────────────────────────────
@@ -515,4 +628,4 @@ async function renameWithRetry(from, to, attempts = 5) {
   }
 }
 
-module.exports = { Store, ValidationError, SchemaError, newId, SCHEMA_VERSION };
+module.exports = { Store, ValidationError, SchemaError, newId, SCHEMA_VERSION, DEFAULT_GROUP };
