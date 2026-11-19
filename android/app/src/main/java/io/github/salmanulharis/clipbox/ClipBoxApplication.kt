@@ -30,6 +30,6 @@ class AppGraph(context: Context) {
     val profiles = ProfileStore(EncryptedFileStore(dir, "profiles", box))
     val cache = SharedCache(File(dir, "cache"), box)
     val api = ClipBoxApi()
-    val sync = SyncEngine(api, profiles, cache, scope)
+    val sync = SyncEngine(api, profiles, cache, scope) { name -> EncryptedFileStore(dir, name, box) }
     val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 }

@@ -26,7 +26,11 @@ const Notes = (() => {
     trash: [],
     infoOpen: false,
     ed: null, // open editor state
+    locked: false, // private notes protected by a passphrase and currently locked
+    lockCounts: null,
+    lastActivity: Date.now(),
   };
+  const AUTO_LOCK_MS = 10 * 60 * 1000;
 
   // ── permissions & helpers ───────────────────────────────────
   const me = () => state.me || {};
@@ -61,9 +65,24 @@ const Notes = (() => {
 
   // ── init ────────────────────────────────────────────────────
   async function reloadPrivate() {
-    const { active, trash } = await PrivateStore.list();
-    N.priv = active;
-    N.trash = trash;
+    const r = await PrivateStore.list();
+    N.locked = r.locked;
+    N.lockCounts = r.counts || null;
+    N.priv = r.active;
+    N.trash = r.trash;
+    if (N.locked && N.ed?.scope === 'private') {
+      // Locked elsewhere (another tab): the open note can't be read or saved any more.
+      N.ed = null;
+      el('note-editor').hidden = true;
+      el('notes-list-view').hidden = false;
+    }
+  }
+
+  /** Lock private notes now (saving an open private note first). */
+  async function lockNow() {
+    if (PrivateStore.lockState() !== 'unlocked') return;
+    if (N.ed?.scope === 'private' && !(await closeEditor())) return;
+    PrivateStore.lock();
   }
 
   function init() {
@@ -85,9 +104,9 @@ const Notes = (() => {
   // ── rendering ───────────────────────────────────────────────
   function render() {
     if (!N.ready) return;
-    el('count-private').textContent = N.priv.length || '';
+    el('count-private').textContent = N.locked ? (N.lockCounts?.active || '') : N.priv.length || '';
     el('count-shared').textContent = (state.notes || []).length || '';
-    el('count-trash').textContent = N.trash.length || '';
+    el('count-trash').textContent = N.locked ? (N.lockCounts?.trash || '') : N.trash.length || '';
     document.querySelectorAll('.section-btn').forEach((b) => {
       const on = b.dataset.section === N.section;
       b.classList.toggle('active', on);
@@ -101,20 +120,36 @@ const Notes = (() => {
     const b = el('section-banner');
     b.className = `section-banner ${N.section}`;
     if (N.section === 'private') {
+      const ls = PrivateStore.lockState();
+      const lockBtn = ls === 'off'
+        ? `<button class="icon-btn sm" data-act="set-lock" data-tip="Protect with a passphrase" aria-label="Protect with a passphrase">${icon('unlock')}</button>`
+        : ls === 'unlocked'
+          ? `<button class="icon-btn sm on" data-act="lock-now" data-tip="Lock now" aria-label="Lock private notes now">${icon('lock')}</button>`
+          : '';
       b.innerHTML = `${icon('lock')}
-        <div class="banner-text"><strong>Private</strong> <span>— only in this browser, at this address</span></div>
+        <div class="banner-text"><strong>Private</strong> <span>— only in this browser, at this address${ls !== 'off' ? ' · passphrase-protected' : ''}</span></div>
         <div class="banner-actions">
+          ${lockBtn}
           <button class="icon-btn sm" data-act="info" data-tip="How private notes work" aria-label="How private notes work" aria-expanded="${N.infoOpen}">${icon('info')}</button>
-          <button class="icon-btn sm" data-act="export" data-tip="Export a backup" aria-label="Export private notes">${icon('download')}</button>
-          <button class="icon-btn sm" data-act="import" data-tip="Import a backup" aria-label="Import private notes">${icon('upload')}</button>
+          ${ls === 'locked' ? '' : `<button class="icon-btn sm" data-act="export" data-tip="Back up" aria-label="Back up private notes">${icon('download')}</button>
+          <button class="icon-btn sm" data-act="import" data-tip="Restore a backup" aria-label="Restore private notes">${icon('upload')}</button>`}
         </div>`;
       if (N.infoOpen) {
         const p = document.createElement('p');
         p.className = 'banner-info';
         p.textContent = `Private notes are stored only in this browser for ${location.origin}. They are never sent to the server or to other devices. `
-          + 'Opening ClipBox at a different address (for example the tunnel URL), in another browser, or after clearing site data shows a different set, so export a backup now and then. '
+          + 'Opening ClipBox at a different address (for example the tunnel URL), in another browser, or after clearing site data shows a different set, so back them up now and then. '
+          + (ls === 'off'
+            ? 'Add a passphrase (lock icon) to encrypt them in this browser. '
+            : 'They are encrypted with your passphrase and lock automatically after 10 minutes without activity and whenever the page reloads. ')
           + 'Because this page\'s code comes from the server, someone who modifies the server\'s ClipBox code could read them; for very sensitive notes, use the ClipBox Android app.';
         b.append(p);
+        if (ls === 'unlocked') {
+          const row = document.createElement('div');
+          row.className = 'banner-buttons';
+          row.innerHTML = '<button class="btn sm" data-act="change-pass">Change passphrase</button><button class="btn sm" data-act="remove-lock">Remove passphrase</button>';
+          b.append(row);
+        }
       }
       if (PrivateStore.backend === 'memory') {
         const w = document.createElement('p');
@@ -150,6 +185,16 @@ const Notes = (() => {
 
   function renderList() {
     renderBanner();
+    const lockedView = N.locked && N.section !== 'shared';
+    el('private-locked').hidden = !lockedView;
+    el('notes-toolbar').hidden = lockedView;
+    if (lockedView) {
+      el('backup-reminder').hidden = true;
+      el('tag-filter').hidden = true;
+      el('notes-list').replaceChildren();
+      el('notes-empty').hidden = true;
+      return;
+    }
     checkReminder();
     const newBtn = el('btn-new-note');
     newBtn.hidden = N.section === 'trash' || (N.section === 'shared' && !canWriteShared());
@@ -649,27 +694,159 @@ const Notes = (() => {
     box.hidden = !(Date.now() - since > 30 * DAY && !(snooze > Date.now()));
   }
 
-  async function exportPrivate() {
-    const data = await PrivateStore.exportData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  function saveFile(blob, name) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `clipbox-private-notes-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = name;
     document.body.append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    toast(`Exported ${data.notes.length} private note${data.notes.length === 1 ? '' : 's'}`);
+  }
+
+  /** Encrypted .cbx backup (same format as the Android app) by default; plain JSON on request. */
+  async function exportPrivate() {
+    const pass = await passDialog({
+      title: 'Back up private notes',
+      message: 'The backup is encrypted with this passphrase. You can restore it here or in the ClipBox Android app.',
+      confirm: true,
+      ok: 'Save encrypted backup',
+      secondary: 'Save without encryption',
+    });
+    if (!pass) return;
+    const day = new Date().toISOString().slice(0, 10);
+    try {
+      if (pass.secondary) {
+        const data = await PrivateStore.exportData();
+        saveFile(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `clipbox-private-notes-${day}.json`);
+        toast(`Saved ${data.notes.length} notes (not encrypted — keep the file safe)`);
+      } else {
+        toast('Encrypting backup…', 'ok', 1500);
+        const { bytes, count } = await PrivateStore.exportEncrypted(pass);
+        saveFile(new Blob([bytes], { type: 'application/octet-stream' }), `clipbox-private-notes-${day}.cbx`);
+        toast(`Saved an encrypted backup of ${count} notes`);
+      }
+    } catch (err) {
+      toast(err.message, 'error', 4000);
+    }
     checkReminder();
   }
 
+  /** Restore a .json or encrypted .cbx backup (from this browser, another browser, or the Android app). */
   async function importPrivate(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let pass = null;
+    for (;;) {
+      try {
+        const r = await PrivateStore.importFile(bytes, pass);
+        toast(`Imported ${r.added} new, ${r.updated} updated${r.skipped ? `, ${r.skipped} unchanged` : ''}`);
+        return;
+      } catch (err) {
+        if (err instanceof PrivateStore.PassphraseRequired || (pass && /passphrase/i.test(err.message))) {
+          pass = await passDialog({
+            title: 'Encrypted backup',
+            message: pass ? 'That passphrase is not right. Try again.' : 'Enter the passphrase used when this backup was made.',
+            ok: 'Restore',
+          });
+          if (!pass) return;
+          continue;
+        }
+        toast(err.message, 'error', 4000);
+        return;
+      }
+    }
+  }
+
+  // ── passphrase lock ─────────────────────────────────────────
+  async function setLock() {
+    const pass = await passDialog({
+      title: 'Protect private notes',
+      message: "Your private notes in this browser will be encrypted with this passphrase. If you forget it they can't be recovered, so back them up first.",
+      confirm: true,
+      ok: 'Encrypt notes',
+    });
+    if (!pass) return;
+    toast('Encrypting…', 'ok', 1500);
     try {
-      const data = JSON.parse(await file.text());
-      const r = await PrivateStore.importData(data);
-      toast(`Imported ${r.added} new, ${r.updated} updated${r.skipped ? `, ${r.skipped} unchanged` : ''}`);
+      await PrivateStore.enableLock(pass);
+      toast('Private notes are now passphrase-protected');
     } catch (err) {
-      toast(err instanceof SyntaxError ? 'That file is not valid JSON.' : err.message, 'error', 4000);
+      toast(err.message, 'error', 4000);
+    }
+  }
+
+  async function changePass() {
+    const pass = await passDialog({ title: 'Change passphrase', message: 'Choose a new passphrase for your private notes.', confirm: true, ok: 'Change' });
+    if (!pass) return;
+    try {
+      await PrivateStore.changePassphrase(pass);
+      toast('Passphrase changed');
+    } catch (err) {
+      toast(err.message, 'error', 4000);
+    }
+  }
+
+  async function removeLock() {
+    const yes = await confirmDialog({
+      title: 'Remove the passphrase?',
+      message: 'Your private notes will be stored in this browser without passphrase encryption.',
+      ok: 'Remove',
+      danger: true,
+    });
+    if (!yes) return;
+    try {
+      await PrivateStore.disableLock();
+      toast('Passphrase removed');
+    } catch (err) {
+      toast(err.message, 'error', 4000);
+    }
+  }
+
+  async function unlockWith(pass) {
+    const err = el('unlock-error');
+    err.hidden = true;
+    el('unlock-btn').disabled = true;
+    try {
+      const ok = await PrivateStore.unlock(pass);
+      if (!ok) {
+        err.textContent = 'Wrong passphrase.';
+        err.hidden = false;
+      }
+      N.lastActivity = Date.now();
+      return ok;
+    } finally {
+      el('unlock-btn').disabled = false;
+    }
+  }
+
+  // ── save clipboard content as a note (called from app.js) ───
+  /**
+   * Create a note from text. Private notes stay in this browser; shared notes go to the
+   * server. Returns the created note, or null if it couldn't be saved.
+   */
+  async function createFrom(scope, { title, body, tags = [] }) {
+    if (!title && !body.trim()) return null;
+    if (scope === 'shared') {
+      if (isViewer()) { toast('This device is view-only.', 'error'); return null; }
+      const n = await attempt(() => api('POST', '/api/notes', { title, body, tags }));
+      if (!n) return null;
+      upsertShared(n);
+      toast('Saved as a shared note', 'ok', 5000, { label: 'View', run: () => goTo('shared', n.id) });
+      return n;
+    }
+    if (PrivateStore.lockState() === 'locked') {
+      const pass = await passDialog({ title: 'Unlock private notes', message: 'Enter your passphrase to save this as a private note.', ok: 'Unlock' });
+      if (!pass) return null;
+      if (!(await PrivateStore.unlock(pass))) { toast('Wrong passphrase.', 'error'); return null; }
+    }
+    try {
+      const n = await PrivateStore.create({ title, body, tags });
+      PrivateStore.requestPersist();
+      toast('Saved as a private note', 'ok', 5000, { label: 'View', run: () => goTo('private', n.id) });
+      return n;
+    } catch (err) {
+      toast(err.message, 'error', 4000);
+      return null;
     }
   }
 
@@ -682,6 +859,10 @@ const Notes = (() => {
     el('section-banner').addEventListener('click', async (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'info') { N.infoOpen = !N.infoOpen; renderBanner(); }
+      else if (act === 'set-lock') setLock();
+      else if (act === 'lock-now') { await lockNow(); toast('Private notes locked'); }
+      else if (act === 'change-pass') changePass();
+      else if (act === 'remove-lock') removeLock();
       else if (act === 'export') exportPrivate();
       else if (act === 'import') el('import-input').click();
       else if (act === 'empty-trash') {
@@ -713,6 +894,20 @@ const Notes = (() => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
     });
 
+    el('unlock-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = el('unlock-pass');
+      if (!input.value) return input.focus();
+      if (await unlockWith(input.value)) input.value = '';
+      else input.select();
+    });
+
+    // Auto-lock after inactivity (only matters when a passphrase is set).
+    for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { N.lastActivity = Date.now(); }, true);
+    setInterval(() => {
+      if (PrivateStore.lockState() === 'unlocked' && Date.now() - N.lastActivity > AUTO_LOCK_MS) lockNow();
+    }, 30000);
+
     // Save on tab switch / close; warn if a shared edit is still unsaved.
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && N.ed?.dirty) save(); });
     window.addEventListener('beforeunload', (e) => {
@@ -727,6 +922,8 @@ const Notes = (() => {
     init,
     render,
     onShared,
+    createFrom,
+    lockNow,
     show() {
       N.visible = true;
       el('tab-notes').classList.remove('dot');

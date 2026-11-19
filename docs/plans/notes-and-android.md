@@ -1,6 +1,6 @@
 # Plan: Private & Shared Notes + Android App
 
-Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0, Phase 3 (Android MVP) in v1.3.0; Phase 4 pending.
+Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0, Phase 3 (Android MVP) in v1.3.0, Phase 4 in v1.4.0 (except multiple groups, see §11).
 
 ---
 
@@ -351,7 +351,7 @@ android/                         (in this repo — one project, one issue tracke
 | **1. Foundations** | DB v2 migration, `serverId`, devices, bearer auth, single-use pair tokens, `/api/info`, `/api/devices/*`, host device-management UI | Server + web. No visible note features yet; fully backward compatible. |
 | **2. Notes on web** | Shared notes API + events + conflict handling; web Notes view; private notes in IndexedDB; export/import; trash | Usable notes on web. |
 | **3. Android MVP** | Connect via QR, profiles & failover, clipboards, shared notes (online + read-only cache), private notes (encrypted), export/import, disconnect | APK on GitHub Releases. |
-| **4. Optional** | Passphrase lock (web), biometric lock (Android), offline outbox for shared notes, certificate pinning for LAN HTTPS, multiple groups per server | As needed. |
+| **4. Optional** | Passphrase lock (web), biometric lock (Android), offline outbox for shared notes, certificate pinning for LAN HTTPS, multiple groups per server | **v1.4.0:** all except multiple groups, plus "Save as note" from clipboards (web + Android) and encrypted `.cbx` backups shared by web and Android. Multiple groups per server is deferred: it changes the access model for every endpoint and deserves its own design review. |
 
 Each phase is a separate PR with tests and README updates, and can be released on its own.
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -55,6 +56,7 @@ private data class NoteItem(
     val locked: Boolean = false,
     val by: String? = null,
     val editable: Boolean = true,
+    val pending: Boolean = false,
 )
 
 @Composable
@@ -67,8 +69,13 @@ fun NotesTab(vm: AppViewModel) {
     var query by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    val pending by vm.pending.collectAsStateWithLifecycle()
+    val authenticate = rememberAuthenticator()
 
     val scope = vm.notesScope
+    val privateHidden = scope == Scope.PRIVATE && vm.privateLocked
+    // Block screenshots / recent-apps preview while protected private notes are visible.
+    SecureScreen(enabled = scope == Scope.PRIVATE && vm.lockEnabled)
     val online = connection is Connection.Online
     val privateActive = privateAll.filter { it.deletedAt == null }
     val trashCount = privateAll.size - privateActive.size
@@ -77,7 +84,7 @@ fun NotesTab(vm: AppViewModel) {
         Scope.SHARED -> snapshot?.notes.orEmpty().map {
             NoteItem(it.id, it.title, it.body, it.tags, it.pinned, it.updatedAt, it.locked,
                 if (it.updatedByName != it.authorName) "by ${it.authorName}, edited by ${it.updatedByName}" else "by ${it.authorName}",
-                vm.canEdit(it))
+                vm.canEdit(it), it.id in pending)
         }
     }
     val allTags = rows.flatMap { it.tags }.groupingBy { it.lowercase() }.eachCount().entries.sortedByDescending { it.value }.map { it.key }.take(30)
@@ -86,7 +93,9 @@ fun NotesTab(vm: AppViewModel) {
         .filter { r -> tag == null || r.tags.any { it.equals(tag, ignoreCase = true) } }
         .filter { NoteText.matches(query, it.title, it.body, it.tags) }
         .sortedWith(compareByDescending<NoteItem> { it.pinned }.thenByDescending { it.updatedAt })
-    val canCreate = scope == Scope.PRIVATE && vm.privateLoadError == null || scope == Scope.SHARED && online && vm.role.canWrite
+    // Shared notes can be written offline too: they're queued and synced on reconnect.
+    val canCreate = scope == Scope.PRIVATE && vm.privateLoadError == null && !privateHidden ||
+        scope == Scope.SHARED && activeId != null && vm.role.canWrite
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
@@ -100,7 +109,23 @@ fun NotesTab(vm: AppViewModel) {
                 Spacer(Modifier.height(12.dp))
                 if (scope == Scope.PRIVATE) {
                     Banner(Ic.Lock, "Private — encrypted on this phone only. Never sent to the server.") {
-                        if (trashCount > 0) TextButton(onClick = { vm.screen = Screen.Trash }) { Text("Trash $trashCount") }
+                        if (!privateHidden && trashCount > 0) TextButton(onClick = { vm.screen = Screen.Trash }) { Text("Trash $trashCount") }
+                        if (vm.lockEnabled && !privateHidden) IconAction(Ic.Lock, "Lock now", tint = p.accent) { vm.lockPrivate() }
+                    }
+                    if (privateHidden) {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Ic.Lock, null, Modifier.size(36.dp), tint = p.muted)
+                            Spacer(Modifier.height(10.dp))
+                            Text("Private notes are locked", style = MaterialTheme.typography.titleMedium, color = p.text)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Use your fingerprint, face or screen lock to open them.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = { authenticate("Unlock private notes") { ok -> if (ok) vm.unlockPrivate() } }) {
+                                Icon(Ic.Unlock, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Unlock")
+                            }
+                        }
                     }
                     vm.privateLoadError?.let {
                         Spacer(Modifier.height(8.dp))
@@ -116,7 +141,7 @@ fun NotesTab(vm: AppViewModel) {
                     ConnectionBanner(vm)
                 }
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
+                if (!privateHidden) OutlinedTextField(
                     query, { query = it },
                     placeholder = { Text("Search notes…") },
                     leadingIcon = { Icon(Ic.Search, null, Modifier.size(18.dp)) },
@@ -133,7 +158,7 @@ fun NotesTab(vm: AppViewModel) {
                 Spacer(Modifier.height(6.dp))
             }
 
-            if (visible.isEmpty() && !(scope == Scope.SHARED && activeId == null)) {
+            if (visible.isEmpty() && !privateHidden && !(scope == Scope.SHARED && activeId == null)) {
                 item {
                     val (t, s) = when {
                         query.isNotBlank() || tag != null -> "No matching notes" to "Try a different search or tag."
@@ -144,16 +169,16 @@ fun NotesTab(vm: AppViewModel) {
                 }
             }
 
-            items(visible, key = { it.id }) { r ->
+            items(if (privateHidden) emptyList() else visible, key = { it.id }) { r ->
                 NoteRow(
                     r,
                     onOpen = { vm.openEditor(scope, r.id) },
                     onCopy = { vm.copyText(NoteText.copyText(r.title, r.body), "Note copied") },
-                    onPin = if (r.editable && (scope == Scope.PRIVATE || online)) ({
+                    onPin = if (r.editable && !r.pending && (scope == Scope.PRIVATE || online)) ({
                         if (scope == Scope.PRIVATE) privateAll.firstOrNull { it.id == r.id }?.let(vm::togglePinPrivate)
                         else snapshot?.notes?.firstOrNull { it.id == r.id }?.let(vm::togglePinShared)
                     }) else null,
-                    onDelete = if (r.editable && (scope == Scope.PRIVATE || online)) ({
+                    onDelete = if (r.editable) ({
                         if (scope == Scope.PRIVATE) privateAll.firstOrNull { it.id == r.id }?.let(vm::trashPrivate)
                         else confirmDelete = r.id
                     }) else null,
@@ -206,7 +231,7 @@ private fun NoteRow(r: NoteItem, onOpen: () -> Unit, onCopy: () -> Unit, onPin: 
             if (preview.isNotEmpty()) Text(preview, style = MaterialTheme.typography.bodyMedium, color = p.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(2.dp))
             Text(
-                listOfNotNull(timeAgo(r.updatedAt), r.by).joinToString(" · ") + r.tags.take(5).joinToString("") { "  #$it" },
+                listOfNotNull(timeAgo(r.updatedAt), r.by, if (r.pending) "waiting to sync" else null).joinToString(" · ") + r.tags.take(5).joinToString("") { "  #$it" },
                 style = MaterialTheme.typography.bodySmall, color = p.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
@@ -221,6 +246,11 @@ fun TrashScreen(vm: AppViewModel) {
     val p = LocalPalette.current
     val all by vm.privateNotes.collectAsStateWithLifecycle()
     val trash = all.filter { it.deletedAt != null }.sortedByDescending { it.deletedAt }
+    SecureScreen(enabled = vm.lockEnabled)
+    if (vm.privateLocked) {
+        vm.screen = Screen.Home
+        return
+    }
     var confirmEmpty by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {

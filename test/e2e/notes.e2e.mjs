@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { startServer } from '../helpers.mjs';
+import { startServer, ROOT } from '../helpers.mjs';
+import { pbkdf2Sync, createDecipheriv } from 'node:crypto';
 
 let srv;
 let browser;
@@ -169,13 +170,16 @@ test('deleting a private note can be undone; trash keeps it', async () => {
   await context.close();
 });
 
-test('export downloads a JSON backup of private notes', async () => {
+test('a plain JSON backup is still available on request', async () => {
   const { context, page } = await openApp();
   const title = `Backup-${Date.now()}`;
   await gotoNotes(page, 'private');
   await newNote(page, title, 'backed up');
   await back(page);
-  const [download] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="export"]')]);
+  await page.click('[data-act="export"]');
+  await page.locator('#dlg-pass[open]').waitFor();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#pass-secondary')]);
+  assert.match(download.suggestedFilename(), /\.json$/);
   const data = JSON.parse(readFileSync(await download.path(), 'utf8'));
   assert.equal(data.kind, 'private-notes');
   assert.ok(data.notes.some((n) => n.title === title));
@@ -194,4 +198,126 @@ test('layout works on a phone and in dark mode', async () => {
   await page.click('#tab-clipboards');
   await shot(page, '10-mobile-clipboards-dark');
   await context.close();
+});
+
+// ── Phase 4: save clipboard content as notes, passphrase lock, encrypted backups ──
+
+async function addClipboardText(page, text) {
+  await page.click('#tab-clipboards');
+  await page.fill('#input', text);
+  await page.click('#btn-add');
+  await page.locator('.item .item-text', { hasText: text }).first().waitFor();
+}
+
+test('a clipboard item can be saved as a private note without contacting the server', async () => {
+  const { context, page, requests } = await openApp();
+  const text = `clip-to-private-${Date.now()}`;
+  await addClipboardText(page, text);
+  const before = requests.length;
+  const row = page.locator('.item', { hasText: text }).first();
+  await row.hover();
+  await row.locator('[data-act="note"]').click();
+  await page.locator('#dlg-save-note[open]').waitFor();
+  assert.equal(await page.isChecked('#dlg-save-note input[value="private"]'), true, 'private is the default');
+  await shot(page, '11-save-as-note');
+  await page.fill('#save-note-title', 'From clipboard');
+  await page.click('#save-note-ok');
+  await page.locator('.toast', { hasText: 'Saved as a private note' }).waitFor();
+  const after = requests.slice(before);
+  assert.deepEqual(after.filter((r) => r.includes('/api/notes')), [], 'saving privately must not call the notes API');
+  await page.locator('.toast-action', { hasText: 'View' }).click();
+  await waitForValue(page, '#editor-body', text);
+  await context.close();
+});
+
+test('a whole clipboard can be saved as a shared note', async () => {
+  const { context, page } = await openApp();
+  const a = `first-${Date.now()}`;
+  const b = `second-${Date.now()}`;
+  await addClipboardText(page, a);
+  await addClipboardText(page, b);
+  await page.click('#btn-save-note');
+  await page.locator('#dlg-save-note[open]').waitFor();
+  await page.check('#dlg-save-note input[value="shared"]');
+  await page.click('#save-note-ok');
+  await page.locator('.toast', { hasText: 'Saved as a shared note' }).waitFor();
+  const state = await (await fetch(`${srv.base}/api/state`)).json();
+  const note = state.notes.find((n) => n.body.includes(a) && n.body.includes(b));
+  assert.ok(note, 'shared note contains both clipboard items');
+  await context.close();
+});
+
+test('a passphrase encrypts private notes in the browser and locks them', async () => {
+  const { context, page } = await openApp();
+  const secret = `locked-secret-${Date.now()}`;
+  await gotoNotes(page, 'private');
+  await newNote(page, 'Lockable', secret);
+  await back(page);
+
+  await page.click('[data-act="set-lock"]');
+  await page.fill('#pass-1', 'correct horse battery');
+  await page.fill('#pass-2', 'correct horse battery');
+  await page.click('#pass-ok');
+  await page.locator('.toast', { hasText: 'passphrase-protected' }).waitFor({ timeout: 15000 });
+
+  const raw = await page.evaluate(() => new Promise((resolve, reject) => {
+    const r = indexedDB.open('clipbox-private');
+    r.onsuccess = () => {
+      const q = r.result.transaction('notes').objectStore('notes').getAll();
+      q.onsuccess = () => resolve(JSON.stringify(q.result));
+      q.onerror = () => reject(q.error);
+    };
+  }));
+  assert.equal(raw.includes(secret), false, 'note text must be encrypted at rest');
+  assert.equal(raw.includes('Lockable'), false, 'titles are encrypted too');
+
+  await page.reload();
+  await page.locator('#app').waitFor({ state: 'visible' });
+  await page.click('#tab-notes');
+  await page.locator('#private-locked').waitFor({ state: 'visible' });
+  await shot(page, '12-locked');
+  assert.equal(await page.locator('#notes-list .note-title').count(), 0);
+
+  await page.fill('#unlock-pass', 'wrong passphrase');
+  await page.click('#unlock-btn');
+  await page.locator('#unlock-error', { hasText: 'Wrong passphrase' }).waitFor({ timeout: 15000 });
+  await page.fill('#unlock-pass', 'correct horse battery');
+  await page.click('#unlock-btn');
+  await page.locator('#notes-list .note-title', { hasText: 'Lockable' }).waitFor({ timeout: 15000 });
+  await context.close();
+});
+
+test('encrypted backups use the shared .cbx format (web ↔ Android)', async () => {
+  const { context, page } = await openApp();
+  await gotoNotes(page, 'private');
+  await newNote(page, 'Backup me', 'cbx body');
+  await back(page);
+  await page.click('[data-act="export"]');
+  await page.fill('#pass-1', 'backup passphrase');
+  await page.fill('#pass-2', 'backup passphrase');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#pass-ok')]);
+  assert.match(download.suggestedFilename(), /\.cbx$/);
+
+  // Decrypt with the reference algorithm (the same one the Android app uses).
+  const bytes = readFileSync(await download.path());
+  assert.equal(bytes.subarray(0, 4).toString('ascii'), 'CBX1');
+  const iterations = bytes.readUInt32BE(4);
+  const key = pbkdf2Sync('backup passphrase', bytes.subarray(8, 24), iterations, 32, 'sha256');
+  const d = createDecipheriv('aes-256-gcm', key, bytes.subarray(24, 36));
+  d.setAuthTag(bytes.subarray(bytes.length - 16));
+  const data = JSON.parse(Buffer.concat([d.update(bytes.subarray(36, bytes.length - 16)), d.final()]).toString('utf8'));
+  assert.equal(data.kind, 'private-notes');
+  assert.ok(data.notes.some((n) => n.title === 'Backup me'));
+  await context.close();
+
+  // A fresh browser imports the shared fixture (also imported by the Android unit tests).
+  const fresh = await openApp();
+  await gotoNotes(fresh.page, 'private');
+  const [chooser] = await Promise.all([fresh.page.waitForEvent('filechooser'), fresh.page.click('[data-act="import"]')]);
+  await chooser.setFiles(join(ROOT, 'test', 'fixtures', 'interop-backup.cbx'));
+  await fresh.page.locator('#dlg-pass[open]').waitFor();
+  await fresh.page.fill('#pass-1', 'fixture-passphrase');
+  await fresh.page.click('#pass-ok');
+  await fresh.page.locator('#notes-list .note-title', { hasText: 'Interop note' }).waitFor();
+  await fresh.context.close();
 });

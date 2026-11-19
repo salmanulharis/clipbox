@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -60,6 +61,13 @@ fun SettingsTab(vm: AppViewModel) {
     val connection by vm.connection.collectAsStateWithLifecycle()
     val privateAll by vm.privateNotes.collectAsStateWithLifecycle()
     val profile = profiles.firstOrNull { it.serverId == activeId }
+    val pending by vm.pending.collectAsStateWithLifecycle()
+    val authenticate = rememberAuthenticator()
+    /** Run [action] now, or after fingerprint/PIN if private notes are locked. */
+    fun unlocked(action: () -> Unit) {
+        if (!vm.privateLocked) action()
+        else authenticate("Unlock private notes") { ok -> if (ok) { vm.unlockPrivate(); action() } }
+    }
 
     var dialog by remember { mutableStateOf<String?>(null) } // disconnect | export | import-pass
     var exportPass by remember { mutableStateOf<CharArray?>(null) }
@@ -113,6 +121,8 @@ fun SettingsTab(vm: AppViewModel) {
                     InfoRow("Security", if (UrlPolicy.isEncrypted(it)) "Encrypted (HTTPS)" else "Not encrypted (local network only)")
                 }
                 InfoRow("This phone", "${vm.role.name.lowercase().replaceFirstChar { it.uppercase() }}${if (!vm.role.canWrite) " · view only" else ""}")
+                if (profile.certSha256 != null) InfoRow("Certificate", "Pinned from the QR code (self-signed)")
+                if (pending.isNotEmpty()) InfoRow("Waiting", "${pending.size} offline change${if (pending.size == 1) "" else "s"} to sync")
                 Spacer(Modifier.height(4.dp))
                 ActionRow(Ic.Refresh, "Reconnect now") { vm.refresh() }
                 ActionRow(Ic.Scan, "Connect another server") { vm.screen = Screen.Scanner }
@@ -127,16 +137,38 @@ fun SettingsTab(vm: AppViewModel) {
         }
 
         Section("Private notes") {
+            val secure = AppLock.deviceSecure(context)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Lock with fingerprint or screen lock", style = MaterialTheme.typography.bodyLarge, color = p.text)
+                    Text(
+                        if (secure || vm.lockEnabled) "Asks before showing private notes, and again after 30 seconds away. Also blocks screenshots of them."
+                        else "Set up a screen lock in Android Settings to use this.",
+                        style = MaterialTheme.typography.bodySmall, color = p.muted,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = vm.lockEnabled,
+                    enabled = secure || vm.lockEnabled,
+                    onCheckedChange = { on ->
+                        authenticate(if (on) "Turn on the private notes lock" else "Turn off the private notes lock") { ok ->
+                            if (ok) vm.changePrivateLock(on)
+                        }
+                    },
+                )
+            }
+            HorizontalDivider(color = p.border.copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 8.dp))
             Text(
                 "${privateAll.count { it.deletedAt == null }} notes, encrypted with a key that never leaves this phone. " +
                     "They aren't included in Android backups — make your own encrypted backup below.",
                 style = MaterialTheme.typography.bodyMedium, color = p.muted,
             )
             Spacer(Modifier.height(8.dp))
-            ActionRow(Ic.Download, "Back up (encrypted file)") { dialog = "export" }
-            ActionRow(Ic.Upload, "Restore from a backup") { openDoc.launch(arrayOf("*/*")) }
+            ActionRow(Ic.Download, "Back up (encrypted file)") { unlocked { dialog = "export" } }
+            ActionRow(Ic.Upload, "Restore from a backup") { unlocked { openDoc.launch(arrayOf("*/*")) } }
             Text(
-                "Restore also accepts backups exported from the ClipBox web app.",
+                "Backups are interchangeable with the ClipBox web app (encrypted .cbx or plain .json).",
                 style = MaterialTheme.typography.bodySmall, color = p.muted,
             )
         }

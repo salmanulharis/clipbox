@@ -10,7 +10,7 @@ import java.io.File
  * not depend on the :network module or an HTTP client.
  */
 class PrivacyGuardTest {
-    private val moduleDir = File(System.getProperty("user.dir"))
+    private val moduleDir = File(checkNotNull(System.getProperty("user.dir")))
 
     @Test fun `module does not depend on networking`() {
         val build = File(moduleDir, "build.gradle.kts").readText()

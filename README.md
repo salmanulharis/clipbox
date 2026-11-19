@@ -184,6 +184,7 @@ Point it at `http://localhost:3210` and set `PUBLIC_URL` to its address so the C
 | Clear / Delete clipboard | The eraser and trash icons next to *Copy all* (you'll be asked to confirm) |
 | Connect a device | **Connect** shows a QR code for each LAN or public address |
 | Scan a QR code | The scan icon in the top bar. You can open the link, add it to the clipboard, or copy it. |
+| Save as note | The note icon on a text item, or next to *Copy all* for the whole clipboard. Choose **Private** (default) or **Shared** |
 | Change theme | The palette icon in the top bar (each device remembers its own choice) |
 | Focus the input | Press `/` |
 
@@ -209,11 +210,13 @@ Switch between **Clipboards** and **Notes** in the top bar. Notes have two clear
 - **Write:** click **New private note** or **New shared note**. Notes save automatically as you type. Press **Esc** to go back, or **Ctrl/⌘+S** to save now.
 - **Organise:** pin notes to the top, add `#tags` (separated by commas) and filter by tapping a tag, or search titles, text and tags instantly. Press `/` to focus search.
 - **Quick actions:** copy, pin, edit and delete from the list.
+- **Save clipboard content as a note:** the note icon on any text item (or next to *Copy all* for the whole clipboard) opens a small dialog. **Private** is preselected; **Shared** must be chosen deliberately.
 - **Moving between sections is always explicit.** **Share…** puts a *copy* of a private note in Shared, after you confirm; the private original stays private. **Make private copy** saves a shared note into this browser.
 - **Lock (shared notes):** the author can lock a note so only they or the host can edit or delete it.
 - **Conflicts:** if someone else saves a shared note while you're editing it, you choose **Keep mine**, **Use theirs** or **Copy mine**; nothing is silently overwritten. If the note is deleted while you edit, you can save your text as a new note.
 - **Trash & undo (private):** deleted private notes can be undone straight away, and stay in **Trash** for 30 days.
-- **Backups (private):** use the export ⬇ and import ⬆ buttons in the Private banner. Import merges by note, keeping the newer copy. If you have 10+ private notes and no recent export, ClipBox reminds you after 30 days.
+- **Passphrase lock (private):** click the lock icon in the Private banner to encrypt your private notes in this browser with a passphrase (PBKDF2-SHA256, 600,000 iterations → AES-256-GCM). They lock on every reload and after 10 minutes without activity. Change or remove the passphrase from the ⓘ panel. **A forgotten passphrase can't be recovered**, so back up first.
+- **Backups (private):** use the export ⬇ and import ⬆ buttons in the Private banner. Backups are **encrypted `.cbx` files by default** (same format as the Android app, so they move freely between web and phone); a plain `.json` export is available on request. Import merges by note, keeping the newer copy. If you have 10+ private notes and no recent export, ClipBox reminds you after 30 days.
 
 > **Where private notes live.** They're stored by your browser *for the exact address you opened*. `http://192.168.1.20:3210`, `http://localhost:3210` and your tunnel URL each have their own separate private notes, and so does every browser and private window. Clearing site data deletes them. Safari on iPhone/iPad may erase site data after about 7 days without a visit, unless ClipBox is added to the Home Screen. **Export a backup** now and then, and use a stable address (a DHCP reservation for the server PC helps).
 >
@@ -267,6 +270,8 @@ HTTPS_KEY=./192.168.1.20+1-key.pem
 
 Other devices need to trust mkcert's root CA (see the mkcert docs). If they don't, they'll show a certificate warning that you can accept.
 
+**Android app:** with HTTPS enabled, the QR code also carries the certificate's SHA-256 fingerprint (`#cb1.<id>.sha256-…`). The app trusts exactly that certificate, so it works with self-signed certificates without installing a CA, while any other certificate still has to pass normal system validation.
+
 ---
 
 ## Security model
@@ -281,6 +286,7 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 - **CSRF and DNS rebinding.** Cookie-authenticated writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
 - **Uploaded files.** Only common image types are shown inline. Everything else (including SVG and HTML) is served as a download in a sandbox.
 - **Shared LAN.** On a network you share with others (office, dorm), use `AUTH_MODE=all`.
+- **Private notes passphrase (web):** when enabled, note titles, text and tags are encrypted in IndexedDB; the key exists only in memory while unlocked.
 - **Private notes** have no server representation at all: no API route, no database field, no sync event. The browser code that stores them (`public/private-store.js`) contains no network calls, which the test suite enforces, and an end-to-end test checks that a private note's text never appears in any request.
 - **Shared notes** are checked on the server: viewers can't write, locked notes accept changes only from their author or a host, and edits carry a `baseVersion` so stale writes get `409 Conflict` instead of overwriting.
 

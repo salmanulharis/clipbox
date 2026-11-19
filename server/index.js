@@ -40,6 +40,20 @@ const auth = new Auth(config, store, () => tunnel.url);
 const ROLE_RANK = { viewer: 0, member: 1, host: 2 };
 const NEED_RANK = { read: 0, write: 1, host: 2 };
 
+/**
+ * SHA-256 fingerprint (lowercase hex) of the HTTPS certificate, or null over plain http.
+ * Put in QR codes so the Android app can trust a self-signed LAN certificate (pinning on first use).
+ */
+const CERT_SHA256 = (() => {
+  if (!config.https) return null;
+  try {
+    const pem = fs.readFileSync(path.resolve(config.root, config.httpsCert), 'utf8');
+    return new (require('crypto').X509Certificate)(pem).fingerprint256.replace(/:/g, '').toLowerCase();
+  } catch {
+    return null;
+  }
+})();
+
 // ── helpers ───────────────────────────────────────────────────
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -337,7 +351,8 @@ function connectInfo(req) {
   const token = auth.createPairToken();
   // The #cb1.<serverId> fragment lets the Android app recognise a ClipBox QR;
   // browsers ignore fragments, so camera-scanned links behave exactly as before.
-  const fragment = `#cb1.${store.serverId}`;
+  // With HTTPS, the certificate fingerprint lets the app pin a self-signed LAN certificate.
+  const fragment = `#cb1.${store.serverId}${CERT_SHA256 ? `.sha256-${CERT_SHA256}` : ''}`;
   const withToken = (base) => `${base}/join?t=${encodeURIComponent(token)}${fragment}`;
   const urls = localUrls(config).map((u) => ({
     kind: 'local',
@@ -376,6 +391,7 @@ route('GET', /^\/api\/info$/, (req, res) => {
     authMode: config.authMode,
     authRequired: auth.requiresAuth(req),
     passwordSet: auth.passwordSet,
+    certSha256: CERT_SHA256,
   });
 }, { open: true });
 

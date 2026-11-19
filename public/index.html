@@ -54,6 +54,7 @@
           <span id="board-count" class="muted"></span>
           <div class="spacer"></div>
           <button id="btn-copy-all" class="btn primary" data-tip="Copy every text item in this clipboard"><i data-icon="copy"></i><span>Copy all</span></button>
+          <button id="btn-save-note" class="icon-btn" data-tip="Save clipboard as a note" aria-label="Save clipboard as a note"><i data-icon="note"></i></button>
           <button id="btn-rename" class="icon-btn" data-tip="Rename clipboard" aria-label="Rename clipboard"><i data-icon="edit"></i></button>
           <button id="btn-clear" class="icon-btn" data-tip="Clear all items" aria-label="Clear all items"><i data-icon="eraser"></i></button>
           <button id="btn-delete" class="icon-btn danger" data-tip="Delete clipboard" aria-label="Delete clipboard"><i data-icon="trash"></i></button>
@@ -99,7 +100,17 @@
             <button id="reminder-export" class="btn sm">Export</button>
             <button id="reminder-later" class="btn sm">Later</button>
           </div>
-          <div class="notes-toolbar">
+          <div id="private-locked" class="locked-panel" hidden>
+            <i data-icon="lock"></i>
+            <h3>Private notes are locked</h3>
+            <p class="muted">Enter your passphrase to open them. It never leaves this browser.</p>
+            <form id="unlock-form" class="unlock-form" autocomplete="off">
+              <input id="unlock-pass" class="text-input" type="password" placeholder="Passphrase" autocomplete="current-password" aria-label="Passphrase">
+              <button type="submit" class="btn primary" id="unlock-btn">Unlock</button>
+            </form>
+            <p id="unlock-error" class="error" hidden></p>
+          </div>
+          <div class="notes-toolbar" id="notes-toolbar">
             <label class="search">
               <i data-icon="search"></i>
               <input id="notes-search" type="search" placeholder="Search notes…" aria-label="Search notes" autocomplete="off">
@@ -137,7 +148,7 @@
           <textarea id="editor-body" class="editor-body" placeholder="Write something…" aria-label="Note"></textarea>
           <p id="editor-meta" class="editor-meta muted small"></p>
         </section>
-        <input type="file" id="import-input" accept="application/json,.json" hidden>
+        <input type="file" id="import-input" accept=".json,.cbx,application/json,application/octet-stream" hidden>
       </main>
     </div>
   </div>
@@ -217,6 +228,55 @@
       </div>
       <input type="file" id="scan-file" accept="image/*" capture="environment" hidden>
     </div>
+  </dialog>
+
+  <!-- Save clipboard content as a note -->
+  <dialog id="dlg-save-note" class="dialog">
+    <form id="save-note-form" method="dialog">
+      <div class="dlg-head">
+        <h2>Save as note</h2>
+        <button type="button" class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
+      </div>
+      <div class="dlg-body">
+        <input id="save-note-title" class="text-input" maxlength="200" placeholder="Title" aria-label="Title">
+        <pre id="save-note-preview" class="save-preview"></pre>
+        <div class="scope-choice" role="radiogroup" aria-label="Where to save">
+          <label class="scope-opt">
+            <input type="radio" name="save-scope" value="private" checked>
+            <span class="scope-opt-main"><i data-icon="lock"></i><strong>Private note</strong></span>
+            <small id="save-private-hint">Only in this browser. Never sent to the server.</small>
+          </label>
+          <label class="scope-opt shared" id="save-shared-opt">
+            <input type="radio" name="save-scope" value="shared">
+            <span class="scope-opt-main"><i data-icon="users"></i><strong>Shared note</strong></span>
+            <small id="save-shared-hint"></small>
+          </label>
+        </div>
+      </div>
+      <div class="dlg-foot">
+        <button type="button" class="btn" id="save-note-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="save-note-ok">Save note</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Passphrase dialog (lock, backups) -->
+  <dialog id="dlg-pass" class="dialog">
+    <form id="pass-form" method="dialog" autocomplete="off">
+      <div class="dlg-head"><h2 id="pass-title"></h2></div>
+      <div class="dlg-body">
+        <p id="pass-message" class="muted"></p>
+        <input id="pass-1" class="text-input" type="password" placeholder="Passphrase" aria-label="Passphrase">
+        <input id="pass-2" class="text-input" type="password" placeholder="Repeat passphrase" aria-label="Repeat passphrase">
+        <p id="pass-error" class="error" hidden></p>
+      </div>
+      <div class="dlg-foot">
+        <button type="button" class="btn link-btn" id="pass-secondary" hidden></button>
+        <div class="spacer"></div>
+        <button type="button" class="btn" id="pass-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="pass-ok">OK</button>
+      </div>
+    </form>
   </dialog>
 
   <!-- Prompt / confirm dialog -->

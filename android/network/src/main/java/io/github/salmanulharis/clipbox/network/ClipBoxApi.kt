@@ -48,12 +48,22 @@ data class PairResult(
     val urls: List<String>,
 )
 
-/** Thin client for the ClipBox HTTP API. Every call takes the base URL and the device token. */
-class ClipBoxApi(baseClient: OkHttpClient = OkHttpClient()) {
+/**
+ * Thin client for the ClipBox HTTP API. Every call takes the base URL and the device token.
+ *
+ * [certSha256] pins a self-signed HTTPS certificate (from the server's QR code): a server
+ * presenting exactly that certificate is trusted; any other certificate must pass normal
+ * system validation, so public tunnel URLs keep working.
+ */
+class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val certSha256: String? = null) {
     private val http = baseClient.newBuilder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
+        .apply { certSha256?.let { Pinning.apply(this, it) } }
         .build()
+
+    /** The same client, trusting [pin] in addition to the system's certificate authorities. */
+    fun pinned(pin: String?): ClipBoxApi = if (pin == certSha256) this else ClipBoxApi(baseClient, pin)
     private val probe = http.newBuilder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
@@ -198,7 +208,13 @@ class ClipBoxApi(baseClient: OkHttpClient = OkHttpClient()) {
             override fun onFailure(call: Call, e: IOException) {
                 if (cont.isCancelled) return
                 runCatching { android.util.Log.w("ClipBoxApi", "${req.method} ${req.url.encodedPath} failed: $e") }
-                cont.resumeWithException(ApiException(0, "Can't reach the server.", "offline").apply { initCause(e) })
+                val error = if (e is javax.net.ssl.SSLException) {
+                    // TLS problems are not "offline": the server answered but isn't trusted.
+                    ApiException(-2, "This server's HTTPS certificate isn't trusted. Scan its QR code from ClipBox → Connect to trust it.", "tls")
+                } else {
+                    ApiException(0, "Can't reach the server.", "offline")
+                }
+                cont.resumeWithException(error.apply { initCause(e) })
             }
         })
     }
