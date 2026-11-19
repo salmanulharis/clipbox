@@ -145,9 +145,17 @@ function me(ctx) {
 }
 
 /** Make sure a browser has a device record + cookie; upgrade legacy sessions. Returns Set-Cookie values. */
+/**
+ * Real browsers send Fetch Metadata (Sec-Fetch-*) or a Mozilla-style user agent; curl, scripts
+ * and health checks don't. Only browsers get a device record, so scripts don't pile up as
+ * anonymous "Browser" devices.
+ */
+const looksLikeBrowser = (req) => Boolean(req.headers['sec-fetch-mode']) || /^Mozilla\//.test(req.headers['user-agent'] || '');
+
 function ensureWebDevice(req, ctx) {
   const cookies = [];
   if (ctx.via === 'bearer') return cookies;
+  if (!ctx.device && !ctx.session && !looksLikeBrowser(req)) return cookies; // a script on the LAN
   if (!ctx.device) {
     ctx.device = store.createDevice({ name: deviceNameFromUA(req.headers['user-agent']), platform: 'web' });
     if (!auth.isHostMachine(req)) ctx.role = ctx.device.role;
