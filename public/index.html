@@ -10,7 +10,9 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/style.css">
+  <script src="/private-store.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/notes.js" defer></script>
 </head>
 <body>
   <!-- Main application -->
@@ -22,6 +24,10 @@
       </div>
       <span id="status" class="status" data-tip="Connecting…" role="status" aria-label="Connecting"></span>
       <span id="role-badge" class="badge" data-tip="The host made this device read-only" hidden>View only</span>
+      <nav class="view-switch" aria-label="View">
+        <button id="tab-clipboards" class="vs-btn active" data-view="clipboards" aria-label="Clipboards"><i data-icon="clipboard"></i><span>Clipboards</span></button>
+        <button id="tab-notes" class="vs-btn" data-view="notes" aria-label="Notes"><i data-icon="note"></i><span>Notes</span></button>
+      </nav>
       <div class="spacer"></div>
       <div class="menu-wrap">
         <button id="btn-theme" class="icon-btn" data-tip="Theme" aria-label="Change theme" aria-haspopup="menu" aria-expanded="false"><i data-icon="palette"></i></button>
@@ -32,7 +38,7 @@
       <button id="btn-logout" class="icon-btn" data-tip="Log out" aria-label="Log out" hidden><i data-icon="logout"></i></button>
     </header>
 
-    <div class="layout">
+    <div class="layout" id="view-clipboards">
       <nav class="sidebar" aria-label="Clipboards">
         <div class="side-head">
           <span>Clipboards</span>
@@ -71,6 +77,67 @@
           <p>This clipboard is empty.</p>
           <p class="muted">Type above, paste with Ctrl+V, or drop a file.</p>
         </div>
+      </main>
+    </div>
+
+    <!-- Notes view -->
+    <div class="layout" id="view-notes" hidden>
+      <nav class="sidebar" aria-label="Note sections">
+        <div class="side-head"><span>Notes</span></div>
+        <ul class="board-list" id="note-sections">
+          <li><button class="board section-btn" data-section="private"><i data-icon="lock"></i><span class="board-label">Private</span><span class="board-count" id="count-private"></span></button></li>
+          <li><button class="board section-btn" data-section="shared"><i data-icon="users"></i><span class="board-label">Shared</span><span class="board-count" id="count-shared"></span></button></li>
+          <li><button class="board section-btn subtle" data-section="trash"><i data-icon="trash"></i><span class="board-label">Trash</span><span class="board-count" id="count-trash"></span></button></li>
+        </ul>
+      </nav>
+
+      <main class="main notes-main">
+        <section id="notes-list-view">
+          <div id="section-banner" class="section-banner"></div>
+          <div id="backup-reminder" class="reminder" hidden>
+            <span>You haven't backed up your private notes in a while.</span>
+            <button id="reminder-export" class="btn sm">Export</button>
+            <button id="reminder-later" class="btn sm">Later</button>
+          </div>
+          <div class="notes-toolbar">
+            <label class="search">
+              <i data-icon="search"></i>
+              <input id="notes-search" type="search" placeholder="Search notes…" aria-label="Search notes" autocomplete="off">
+            </label>
+            <button id="btn-new-note" class="btn primary"><i data-icon="plus"></i><span id="new-note-label">New</span></button>
+          </div>
+          <div id="tag-filter" class="tag-filter"></div>
+          <ul id="notes-list" class="notes-list"></ul>
+          <div id="notes-empty" class="empty" hidden><i data-icon="note"></i><p id="notes-empty-title"></p><p id="notes-empty-sub" class="muted"></p></div>
+        </section>
+
+        <section id="note-editor" class="note-editor" hidden>
+          <div class="editor-bar">
+            <button id="editor-back" class="icon-btn" data-tip="Back to notes (Esc)" aria-label="Back to notes"><i data-icon="arrowLeft"></i></button>
+            <span id="editor-badge" class="scope-badge"></span>
+            <span id="editor-status" class="editor-status muted small" aria-live="polite"></span>
+            <div class="spacer"></div>
+            <button id="editor-copy" class="icon-btn" data-tip="Copy note" aria-label="Copy note"><i data-icon="copy"></i></button>
+            <button id="editor-pin" class="icon-btn" data-tip="Pin" aria-label="Pin"><i data-icon="pin"></i></button>
+            <button id="editor-lock" class="icon-btn" data-tip="Only I can edit" aria-label="Lock note" hidden><i data-icon="lock"></i></button>
+            <button id="editor-move" class="btn sm"></button>
+            <button id="editor-delete" class="icon-btn danger" data-tip="Delete" aria-label="Delete note"><i data-icon="trash"></i></button>
+          </div>
+          <div id="editor-alert" class="editor-alert" hidden>
+            <span id="editor-alert-msg"></span>
+            <div class="row">
+              <button id="alert-primary" class="btn sm primary"></button>
+              <button id="alert-secondary" class="btn sm"></button>
+              <button id="alert-tertiary" class="btn sm"></button>
+            </div>
+          </div>
+          <p id="editor-readonly" class="editor-readonly muted small" hidden></p>
+          <input id="editor-title" class="editor-title" placeholder="Title" maxlength="200" aria-label="Title" autocomplete="off">
+          <input id="editor-tags" class="editor-tags" placeholder="Tags, separated by commas" aria-label="Tags" autocomplete="off">
+          <textarea id="editor-body" class="editor-body" placeholder="Write something…" aria-label="Note"></textarea>
+          <p id="editor-meta" class="editor-meta muted small"></p>
+        </section>
+        <input type="file" id="import-input" accept="application/json,.json" hidden>
       </main>
     </div>
   </div>

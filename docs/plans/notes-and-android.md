@@ -1,6 +1,6 @@
 # Plan: Private & Shared Notes + Android App
 
-Status: **Approved (recommended options).** Phase 1 implemented in v1.1.0; Phases 2–4 pending.
+Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0; Phases 3–4 pending.
 
 ---
 

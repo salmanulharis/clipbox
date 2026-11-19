@@ -25,7 +25,7 @@ const MIME = {
   '.json': 'application/json',
 };
 
-const store = new Store(config.dataDir, { maxTextBytes: config.maxTextBytes });
+const store = new Store(config.dataDir, { maxTextBytes: config.maxTextBytes, maxNoteBytes: config.maxNoteBytes });
 try {
   store.load();
 } catch (err) {
@@ -102,6 +102,7 @@ function serverInfo(req) {
     passwordSet: auth.passwordSet,
     maxTextBytes: config.maxTextBytes,
     maxFileBytes: config.maxFileBytes,
+    maxNoteBytes: config.maxNoteBytes,
     tunnel: tunnel.info(),
   };
 }
@@ -484,6 +485,39 @@ route('DELETE', /^\/api\/devices\/([\w-]+)$/, (req, res, m) => {
   json(res, 200, { ok: true });
 }, { need: 'host' });
 
+// ── shared notes ─────────────────────────────────────────────
+// Private notes never touch the server: there is deliberately no route,
+// field or event for them. These routes only handle *shared* notes.
+const author = (ctx) => (ctx.device ? { id: ctx.device.id, name: ctx.device.name } : null);
+
+/** Locked notes can only be changed by their author or a host. */
+function assertCanModify(note, ctx) {
+  if (note.locked && ctx.role !== 'host' && note.authorId !== ctx.device?.id) {
+    throw new ValidationError(`Only ${note.authorName} or the host can change this locked note.`, 403, { reason: 'locked' });
+  }
+}
+
+route('POST', /^\/api\/notes$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, config.maxNoteBytes * 2 + 8192);
+  json(res, 201, store.createNote(body, author(ctx)));
+});
+
+route('PATCH', /^\/api\/notes\/([\w-]+)$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, config.maxNoteBytes * 2 + 8192);
+  const note = store.getNote(m[1]);
+  assertCanModify(note, ctx);
+  if (body.locked !== undefined && Boolean(body.locked) !== note.locked && ctx.role !== 'host' && note.authorId !== ctx.device?.id) {
+    throw new ValidationError('Only the author or the host can lock or unlock a note.', 403, { reason: 'locked' });
+  }
+  json(res, 200, store.updateNote(m[1], body, author(ctx)));
+});
+
+route('DELETE', /^\/api\/notes\/([\w-]+)$/, (req, res, m, url, ctx) => {
+  assertCanModify(store.getNote(m[1]), ctx);
+  store.deleteNote(m[1]);
+  json(res, 200, { ok: true });
+});
+
 // ── clipboards ───────────────────────────────────────────────
 route('POST', /^\/api\/clipboards$/, async (req, res) => {
   const body = await readJson(req, 4096);
@@ -560,7 +594,7 @@ async function handler(req, res) {
     await r.handler(req, res, pathname.match(r.pattern), url, ctx);
   } catch (err) {
     if (res.headersSent) return res.destroy();
-    if (err instanceof ValidationError) return json(res, err.status, { error: err.message });
+    if (err instanceof ValidationError) return json(res, err.status, { error: err.message, ...(err.extra || {}) });
     console.error('[server]', err);
     json(res, 500, { error: 'Internal server error.' });
   }

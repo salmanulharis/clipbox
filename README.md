@@ -15,6 +15,7 @@ Run it on one computer, open it in any browser on your network (or anywhere thro
 - **Built-in QR scanner.** Uses the live camera, or a photo when the page isn't on HTTPS.
 - **LAN + public access.** Works on your local network and through ngrok or Cloudflare Tunnel, with no code changes.
 - **Themes.** System, Light, Dark, Midnight, Forest, Rose and Sand, remembered per device.
+- **Notes, private and shared.** Private notes never leave your browser; shared notes sync live to everyone on the server, with conflict protection.
 - **Persistent.** Data is stored in a JSON file on the server and survives restarts.
 - **Secure by default.** Remote access always requires a password.
 - **Tiny.** Plain Node.js with two dependencies (`qrcode`, `jsqr`), no database and no build step.
@@ -183,6 +184,30 @@ When a password is needed for an address (any public URL, or every URL with `AUT
 
 QR links also end in `#cb1.<server-id>`. Browsers ignore this; the upcoming ClipBox Android app uses it to recognise the server.
 
+### Notes
+
+Switch between **Clipboards** and **Notes** in the top bar. Notes have two clearly separated sections:
+
+| | 🔒 **Private** | 👥 **Shared** |
+|---|---|---|
+| Stored | Only in this browser (IndexedDB), for this exact address | On the server (`data/db.json`) |
+| Visible to | You, in this browser | Everyone connected to the server |
+| Sent over the network | **Never** | Yes, synced live |
+| Works for viewers | Yes | Read-only |
+
+- **Write:** click **New private note** or **New shared note**. Notes save automatically as you type. Press **Esc** to go back, or **Ctrl/⌘+S** to save now.
+- **Organise:** pin notes to the top, add `#tags` (separated by commas) and filter by tapping a tag, or search titles, text and tags instantly. Press `/` to focus search.
+- **Quick actions:** copy, pin, edit and delete from the list.
+- **Moving between sections is always explicit.** **Share…** puts a *copy* of a private note in Shared, after you confirm; the private original stays private. **Make private copy** saves a shared note into this browser.
+- **Lock (shared notes):** the author can lock a note so only they or the host can edit or delete it.
+- **Conflicts:** if someone else saves a shared note while you're editing it, you choose **Keep mine**, **Use theirs** or **Copy mine**; nothing is silently overwritten. If the note is deleted while you edit, you can save your text as a new note.
+- **Trash & undo (private):** deleted private notes can be undone straight away, and stay in **Trash** for 30 days.
+- **Backups (private):** use the export ⬇ and import ⬆ buttons in the Private banner. Import merges by note, keeping the newer copy. If you have 10+ private notes and no recent export, ClipBox reminds you after 30 days.
+
+> **Where private notes live.** They're stored by your browser *for the exact address you opened*. `http://192.168.1.20:3210`, `http://localhost:3210` and your tunnel URL each have their own separate private notes, and so does every browser and private window. Clearing site data deletes them. Safari on iPhone/iPad may erase site data after about 7 days without a visit, unless ClipBox is added to the Home Screen. **Export a backup** now and then, and use a stable address (a DHCP reservation for the server PC helps).
+>
+> **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. For highly sensitive notes, use the ClipBox Android app (coming soon), whose code doesn't come from the server.
+
 ### Devices & roles
 
 Every browser or app that opens ClipBox is recorded as a **device**. Each device has one of three roles:
@@ -245,6 +270,8 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 - **CSRF and DNS rebinding.** Cookie-authenticated writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
 - **Uploaded files.** Only common image types are shown inline. Everything else (including SVG and HTML) is served as a download in a sandbox.
 - **Shared LAN.** On a network you share with others (office, dorm), use `AUTH_MODE=all`.
+- **Private notes** have no server representation at all: no API route, no database field, no sync event. The browser code that stores them (`public/private-store.js`) contains no network calls, which the test suite enforces, and an end-to-end test checks that a private note's text never appears in any request.
+- **Shared notes** are checked on the server: viewers can't write, locked notes accept changes only from their author or a host, and edits carry a `baseVersion` so stale writes get `409 Conflict` instead of overwriting.
 
 ## Data & backups
 
@@ -278,12 +305,16 @@ server/
   network.js   LAN address detection
   config.js    .env loading and defaults
 public/
-  index.html, app.js, style.css   the whole UI (vanilla JS, no build)
+  index.html, app.js, style.css   the UI shell, clipboards, devices (vanilla JS, no build)
+  notes.js                        Notes view: private + shared notes
+  private-store.js                private notes storage (IndexedDB; no network code)
   theme.js                        applies the saved theme before first paint
 test/
   api.test.mjs                    clipboards, uploads, auth, SSE
   devices.test.mjs                pairing, roles, revocation
   migration.test.mjs              schema upgrades
+  notes.test.mjs                  shared notes API, conflicts, locks, privacy checks
+  e2e/notes.e2e.mjs               browser tests (Playwright + Chromium)
   helpers.mjs                     throwaway test server
 docs/plans/                       design documents for upcoming features
 ```
@@ -294,9 +325,13 @@ docs/plans/                       design documents for upcoming features
 npm run dev     # restart automatically on server changes
 npm run check   # syntax-check all source files
 npm test        # start a throwaway server and run the API test suite
+npm run test:e2e  # browser tests in headless Chromium
+                  # (first time only: npx playwright install chromium)
 ```
 
-CI runs the checks and tests on Linux and Windows with Node 20, 22 and 24.
+Set `SCREENSHOTS=some/folder` when running `test:e2e` to save screenshots of each step.
+
+CI runs the checks and API tests on Linux and Windows with Node 20, 22 and 24, and the browser tests on Linux.
 
 ### API (for scripting)
 
@@ -324,7 +359,14 @@ DELETE /api/clipboards/:id/items/:itemId       delete item
 POST   /api/clipboards/:id/files   (raw body, Content-Type, X-Filename)  upload
 GET    /files/:itemId[?download]               fetch a file
 GET    /api/events                             live updates (Server-Sent Events)
+
+POST   /api/notes   {title, body, tags?, pinned?, locked?}            create a shared note
+PATCH  /api/notes/:id {title?, body?, tags?, baseVersion, pinned?, locked?}
+                                               edit (409 + current note if baseVersion is stale)
+DELETE /api/notes/:id                          delete a shared note
 ```
+
+Shared notes are included in `GET /api/state` as `notes`, and live events have `type: "note"` or `"note-remove"`. Changing `title`, `body` or `tags` requires `baseVersion`; `pinned` and `locked` don't.
 
 Example: send text from a terminal on your LAN:
 

@@ -68,6 +68,7 @@ const config = {
 
   maxTextBytes: int('MAX_TEXT_KB', 1024, 1, 51200) * 1024,
   maxFileBytes: int('MAX_FILE_MB', 25, 1, 2048) * 1024 * 1024,
+  maxNoteBytes: int('NOTE_MAX_KB', 256, 1, 10240) * 1024,
 
   httpsCert: env('HTTPS_CERT', ''),
   httpsKey: env('HTTPS_KEY', ''),

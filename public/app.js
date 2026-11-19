@@ -33,6 +33,16 @@ const ICONS = {
   devices: '<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M5 18h8"/><rect x="17" y="8" width="5" height="12" rx="1"/>',
   ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
   undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
+  note: '<path d="M15 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M15 3v5h5M8 13h8M8 17h5"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  unlock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
+  pin: '<path d="M12 17v5M9 10.8V4h6v6.8l3 3.2v2H6v-2z"/>',
+  arrowLeft: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
   palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.7 1.7-1.7h2c3 0 5.5-2.5 5.5-5.5C22 6 17.5 2 12 2z"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -61,26 +71,37 @@ const state = {
   activeId: store.get('clipbox.active'),
   editing: null,
   loaded: false,
+  notes: [],
+  view: 'clipboards',
 };
 const active = () => state.clipboards.find((c) => c.id === state.activeId) || state.clipboards[0] || null;
 
 // ── toasts ───────────────────────────────────────────────────
-function toast(message, kind = 'ok', ms = 2200) {
+function toast(message, kind = 'ok', ms = 2200, action = null) {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
   el.innerHTML = `${icon(kind === 'error' ? 'x' : 'check')}<span></span>`;
   el.querySelector('span').textContent = message;
-  $('#toasts').append(el);
-  requestAnimationFrame(() => el.classList.add('show'));
-  setTimeout(() => {
+  const hide = () => {
     el.classList.remove('show');
     setTimeout(() => el.remove(), 250);
-  }, ms);
+  };
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-action';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { hide(); action.run(); });
+    el.append(b);
+    el.classList.add('has-action');
+  }
+  $('#toasts').append(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(hide, action ? Math.max(ms, 5000) : ms);
 }
 
 // ── API ──────────────────────────────────────────────────────
 class ApiError extends Error {
-  constructor(message, status, reason) { super(message); this.status = status; this.reason = reason; }
+  constructor(message, status, reason, data) { super(message); this.status = status; this.reason = reason; this.data = data; }
 }
 
 async function api(method, url, body) {
@@ -106,7 +127,7 @@ async function api(method, url, body) {
     showLogin(data?.reason);
     throw new ApiError(data?.error || 'Login required.', res.status, data?.reason);
   }
-  if (!res.ok) throw new ApiError(data?.error || `Request failed (${res.status}).`, res.status);
+  if (!res.ok) throw new ApiError(data?.error || `Request failed (${res.status}).`, res.status, data?.reason, data);
   return data;
 }
 
@@ -424,9 +445,11 @@ function autosize(ta) {
 // ── state updates ────────────────────────────────────────────
 function applySnapshot(data) {
   state.clipboards = data.clipboards;
+  state.notes = data.notes || [];
   state.rev = data.rev;
   state.boot = data.boot;
   render();
+  if (typeof Notes !== 'undefined') Notes.onShared(null);
 }
 
 function upsertClipboard(cb, order) {
@@ -456,6 +479,14 @@ function applyEvent(ev) {
   state.rev = ev.rev;
   if (ev.type === 'clipboard') upsertClipboard(ev.clipboard, ev.order);
   else if (ev.type === 'remove') reorder(ev.order);
+  else if (ev.type === 'note') {
+    const i = state.notes.findIndex((n) => n.id === ev.note.id);
+    if (i >= 0) state.notes[i] = ev.note; else state.notes.push(ev.note);
+  } else if (ev.type === 'note-remove') state.notes = state.notes.filter((n) => n.id !== ev.id);
+  if (ev.type === 'note' || ev.type === 'note-remove') {
+    if (typeof Notes !== 'undefined') Notes.onShared(ev);
+    return;
+  }
   render();
 }
 
@@ -468,6 +499,7 @@ function applyRole() {
   $('#role-badge').hidden = role !== 'viewer';
   $('#btn-devices').hidden = role !== 'host';
   if (role === 'viewer' && state.editing) cancelEdit();
+  if (typeof Notes !== 'undefined') Notes.onShared(null);
 }
 
 async function loadState() {
@@ -1206,6 +1238,21 @@ function setupThemeMenu() {
   applyTheme(store.get('clipbox.theme') || 'system');
 }
 
+// ── views ────────────────────────────────────────────────────
+function setView(view) {
+  state.view = view === 'notes' ? 'notes' : 'clipboards';
+  store.set('clipbox.view', state.view);
+  $('#view-clipboards').hidden = state.view !== 'clipboards';
+  $('#view-notes').hidden = state.view !== 'notes';
+  document.querySelectorAll('.vs-btn').forEach((b) => {
+    const on = b.dataset.view === state.view;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  if (state.view === 'notes') Notes.show();
+  else Notes.hide();
+}
+
 // ── wiring ───────────────────────────────────────────────────
 function wire() {
   hydrateIcons();
@@ -1247,7 +1294,7 @@ function wire() {
 
   // Paste anywhere: files are uploaded; text outside an input is added instantly.
   document.addEventListener('paste', (e) => {
-    if ($('#app').hidden || document.querySelector('dialog[open]')) return;
+    if ($('#app').hidden || state.view !== 'clipboards' || document.querySelector('dialog[open]')) return;
     const dt = e.clipboardData;
     if (!dt) return;
     const files = [...dt.files];
@@ -1270,7 +1317,7 @@ function wire() {
   // Drag & drop
   let dragDepth = 0;
   const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
-  window.addEventListener('dragenter', (e) => { if (hasFiles(e) && !$('#app').hidden) { dragDepth++; $('#drop').hidden = false; } });
+  window.addEventListener('dragenter', (e) => { if (hasFiles(e) && !$('#app').hidden && state.view === 'clipboards') { dragDepth++; $('#drop').hidden = false; } });
   window.addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; $('#drop').hidden = true; } });
   window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
   window.addEventListener('drop', (e) => {
@@ -1278,19 +1325,24 @@ function wire() {
     e.preventDefault();
     dragDepth = 0;
     $('#drop').hidden = true;
-    if (!$('#app').hidden) uploadFiles([...e.dataTransfer.files]);
+    if (!$('#app').hidden && state.view === 'clipboards') uploadFiles([...e.dataTransfer.files]);
   });
 
   // Keyboard: "/" focuses the composer
   document.addEventListener('keydown', (e) => {
     if (e.key === '/' && !e.ctrlKey && !e.metaKey && !(e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) && !document.querySelector('dialog[open]')) {
       e.preventDefault();
-      input.focus();
+      if (state.view === 'notes') Notes.focusSearch();
+      else input.focus();
     }
   });
+
+  // Clipboards | Notes switch
+  document.querySelectorAll('.vs-btn').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 }
 
 async function start() {
+  await Notes.init();
   try {
     if (!(await checkSessionAndMaybeLogin())) return;
     await loadState();
@@ -1307,7 +1359,11 @@ async function start() {
   $('#btn-logout').hidden = !state.session.required;
   if (location.search) history.replaceState(null, '', '/');
   connectSync();
+  setView(store.get('clipbox.view') || 'clipboards');
 }
 
-wire();
-start();
+// Deferred scripts all run before DOMContentLoaded, so notes.js is loaded by then.
+document.addEventListener('DOMContentLoaded', () => {
+  wire();
+  start();
+});
