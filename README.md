@@ -18,9 +18,20 @@ Run it on one computer, open it in any browser on your network (or anywhere thro
 - **Notes, private and shared.** Private notes never leave your browser; shared notes sync live to everyone on the server, with conflict protection.
 - **Persistent.** Data is stored in a JSON file on the server and survives restarts.
 - **Secure by default.** Remote access always requires a password.
+- **Android app.** A native app that pairs by QR code, keeps private notes encrypted on the phone, and syncs shared notes and clipboards. See [android/README.md](android/README.md).
 - **Tiny.** Plain Node.js with two dependencies (`qrcode`, `jsqr`), no database and no build step.
 
 ---
+
+## Android app
+
+The `android/` folder contains a native Android app (Kotlin + Jetpack Compose, Android 8.0+):
+
+1. On your computer, open ClipBox and click **Connect**.
+2. In the app, tap **Scan QR code** and scan it. The app pairs itself with a device token and remembers the server.
+3. On Android 17+, allow **Local network access** when asked; the app needs it to reach a server on your Wi-Fi.
+
+Private notes in the app are encrypted with a key in the Android Keystore and are never sent to the server. Shared notes and clipboards sync live. Build instructions and the security details are in [android/README.md](android/README.md). Each CI run also uploads a debug APK as a downloadable artifact.
 
 ## Requirements
 
@@ -206,7 +217,7 @@ Switch between **Clipboards** and **Notes** in the top bar. Notes have two clear
 
 > **Where private notes live.** They're stored by your browser *for the exact address you opened*. `http://192.168.1.20:3210`, `http://localhost:3210` and your tunnel URL each have their own separate private notes, and so does every browser and private window. Clearing site data deletes them. Safari on iPhone/iPad may erase site data after about 7 days without a visit, unless ClipBox is added to the Home Screen. **Export a backup** now and then, and use a stable address (a DHCP reservation for the server PC helps).
 >
-> **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. For highly sensitive notes, use the ClipBox Android app (coming soon), whose code doesn't come from the server.
+> **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. For highly sensitive notes, use the [ClipBox Android app](android/README.md), whose code doesn't come from the server.
 
 ### Devices & roles
 
@@ -316,6 +327,7 @@ test/
   notes.test.mjs                  shared notes API, conflicts, locks, privacy checks
   e2e/notes.e2e.mjs               browser tests (Playwright + Chromium)
   helpers.mjs                     throwaway test server
+android/                          native Android app (see android/README.md)
 docs/plans/                       design documents for upcoming features
 ```
 
@@ -331,7 +343,7 @@ npm run test:e2e  # browser tests in headless Chromium
 
 Set `SCREENSHOTS=some/folder` when running `test:e2e` to save screenshots of each step.
 
-CI runs the checks and API tests on Linux and Windows with Node 20, 22 and 24, and the browser tests on Linux.
+CI runs the checks and API tests on Linux and Windows with Node 20, 22 and 24, the browser tests on Linux, and the Android unit tests plus a debug APK build.
 
 ### API (for scripting)
 

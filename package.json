@@ -1,6 +1,6 @@
 {
   "name": "clipbox",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Lightweight self-hosted clipboard sharing across desktop, mobile and tablet browsers, with live sync, QR connect and ngrok/Cloudflare tunnel support.",
   "main": "server/index.js",
   "private": true,

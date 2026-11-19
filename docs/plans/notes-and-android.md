@@ -1,6 +1,6 @@
 # Plan: Private & Shared Notes + Android App
 
-Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0; Phases 3–4 pending.
+Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0, Phase 3 (Android MVP) in v1.3.0; Phase 4 pending.
 
 ---
 
@@ -294,6 +294,16 @@ All new routes use the existing router, error format and auth. **Existing routes
 ---
 
 ## 9. Android app architecture
+
+> **As built in Phase 3 (v1.3.0): changes from the original plan**
+>
+> - **Private notes storage:** a single AES-256-GCM encrypted file with a Keystore-held key, written atomically with a `.bak` copy, instead of Room + SQLCipher. Same protection at rest, but no annotation processing and no native SQLCipher dependency. A personal notes collection is small enough for one document.
+> - **QR decoding:** ZXing (pure Java, works without Google Play Services) instead of ML Kit.
+> - **Offline cache and server profiles:** the same encrypted-file mechanism instead of Room/DataStore.
+> - **Android 17 local network permission:** discovered during emulator testing. Apps targeting API 37 can't reach private IPs without `ACCESS_LOCAL_NETWORK`, and the connection just times out silently. The app now requests it before connecting to a LAN address, on startup when a saved server is on the LAN, and from the offline banner.
+> - **Lost Keystore key:** if private notes can't be decrypted, the repository becomes read-only rather than overwriting the file.
+> - **Not in the MVP:** offline editing of shared notes (they're read-only offline, as planned), image copy/share from clipboards, and biometric lock. These are in Phase 4.
+
 
 ```
 android/                         (in this repo — one project, one issue tracker)
