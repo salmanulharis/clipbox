@@ -181,6 +181,24 @@ The dot next to the logo shows the connection state: **green** = live, **amber**
 
 When a password is needed for an address (any public URL, or every URL with `AUTH_MODE=all`), the QR code includes a **sign-in token that is valid for 10 minutes**. Scanning it opens ClipBox already logged in, so you never have to type the password on your phone. After it expires, open **Connect** again to get a fresh code.
 
+QR links also end in `#cb1.<server-id>`. Browsers ignore this; the upcoming ClipBox Android app uses it to recognise the server.
+
+### Devices & roles
+
+Every browser or app that opens ClipBox is recorded as a **device**. Each device has one of three roles:
+
+| Role | Who gets it | Can |
+|---|---|---|
+| **Host** | The server computer itself, and any device that signed in with `AUTH_PASSWORD` | Everything, plus manage devices |
+| **Member** | Devices that joined by QR code, and browsers on your LAN | Read and change clipboards |
+| **Viewer** | A device the host downgraded | Read and copy only (shows a *View only* badge) |
+
+To manage devices as the host, open **Connect → Manage devices**. From there you can rename a device, change its role, **revoke** it (it's signed out immediately, and its live connection is closed), restore it, or remove it.
+
+> In the default `AUTH_MODE=public`, browsers on your LAN don't need a password, so a revoked LAN browser can simply reload and come back as a new device. Use `AUTH_MODE=all` when you need revocation and viewer roles to be enforced for every device.
+
+Browser devices that haven't been seen for 90 days are forgotten automatically.
+
 ---
 
 ## Browser notes: HTTP vs HTTPS
@@ -219,9 +237,12 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 
 - **LAN vs remote.** A request counts as *local* only when **all** of these are true: it comes straight from a private/loopback IP, it carries no proxy headers (`X-Forwarded-For`, `CF-Connecting-IP`, …), and its `Host` is an IP address, `localhost`, your computer's name, `*.local`, or a name in `LOCAL_HOSTNAMES`. Everything else, including all tunnel traffic, counts as *remote*.
 - **Remote requests always need the password.** If `AUTH_PASSWORD` is empty, they are rejected outright.
-- **Sessions** are HMAC-signed, `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS). **Changing `AUTH_PASSWORD` signs out every device.** The signing secret lives in `DATA_DIR/secret.key`.
-- **Login** attempts are rate-limited (10 per 5 minutes per client).
-- **CSRF and DNS rebinding.** API writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
+- **Sessions** are HMAC-signed, `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS), tied to a device record, so revoking the device ends the session. **Changing `AUTH_PASSWORD` signs out every browser.** The signing secret lives in `DATA_DIR/secret.key`.
+- **App devices** authenticate with a random 256-bit bearer token issued once at pairing. Only its SHA-256 hash is stored. Revoking the device invalidates the token instantly. App devices keep working through a tunnel even if `AUTH_PASSWORD` is empty, because pairing itself was the authorisation.
+- **QR pairing tokens** expire after 10 minutes. Each one can register only **one** app device; browsers can reuse it within that window.
+- **Roles** are enforced on the server for every request: viewers can't write, and only hosts can manage devices.
+- **Login and pairing** attempts are rate-limited (10 failures per 5 minutes per client).
+- **CSRF and DNS rebinding.** Cookie-authenticated writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
 - **Uploaded files.** Only common image types are shown inline. Everything else (including SVG and HTML) is served as a download in a sandbox.
 - **Shared LAN.** On a network you share with others (office, dorm), use `AUTH_MODE=all`.
 
@@ -229,13 +250,16 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 
 ```
 data/
-├── db.json        # all clipboards and text items
-├── db.json.bak    # previous version (used automatically if db.json is damaged)
-├── files/         # uploaded images and files
-└── secret.key     # session signing key
+├── db.json            # clipboards, devices, server identity (schema v2)
+├── db.json.bak        # previous version (used automatically if db.json is damaged)
+├── db.v1-backup.json  # one-time copy of your data from before the v2 upgrade
+├── files/             # uploaded images and files
+└── secret.key         # session/device signing key
 ```
 
 Writes are atomic (temp file → rename) and flushed on shutdown. To back up, copy the `data/` folder. To reset everything, stop the server and delete it.
+
+**Upgrades.** ClipBox 1.1 upgrades `db.json` from schema v1 to v2 automatically on first start, and keeps the original as `db.v1-backup.json`. If `db.json` was written by a *newer* ClipBox, the server refuses to start instead of risking your data. To roll back to 1.0, stop the server and copy `db.v1-backup.json` over `db.json`; anything created since the upgrade is lost.
 
 ## Running in the background
 
@@ -248,8 +272,8 @@ Writes are atomic (temp file → rename) and flushed on shutdown. To back up, co
 ```
 server/
   index.js     HTTP server, routing, SSE sync, uploads, QR codes
-  store.js     JSON persistence and clipboard operations
-  auth.js      local/remote detection, sessions, sign-in tokens
+  store.js     JSON persistence, schema migration, clipboards and devices
+  auth.js      local/remote detection, sessions, device tokens, roles
   tunnel.js    ngrok / cloudflared launch and URL discovery
   network.js   LAN address detection
   config.js    .env loading and defaults
@@ -257,7 +281,11 @@ public/
   index.html, app.js, style.css   the whole UI (vanilla JS, no build)
   theme.js                        applies the saved theme before first paint
 test/
-  api.test.mjs                    end-to-end API tests (node:test)
+  api.test.mjs                    clipboards, uploads, auth, SSE
+  devices.test.mjs                pairing, roles, revocation
+  migration.test.mjs              schema upgrades
+  helpers.mjs                     throwaway test server
+docs/plans/                       design documents for upcoming features
 ```
 
 ## Development
@@ -272,10 +300,20 @@ CI runs the checks and tests on Linux and Windows with Node 20, 22 and 24.
 
 ### API (for scripting)
 
-All write requests need the header `X-ClipBox: 1`. Remote requests also need the session cookie from `POST /api/login`.
+Authenticate in one of two ways:
+- **Cookie** (browsers and scripts): writes need the header `X-ClipBox: 1`, and remote requests also need the session cookie from `POST /api/login`.
+- **Bearer token** (apps): pair once, then send `Authorization: Bearer <deviceToken>` on every request. No `X-ClipBox` header is needed.
 
 ```
-GET    /api/state                              all clipboards
+GET    /api/info                               server id, name, version (no data; no auth)
+POST   /api/devices/pair  {pairToken | password, name, platform}
+                                               → {deviceId, deviceToken, role, serverId, urls}
+GET    /api/devices                            list devices            (host)
+PATCH  /api/devices/:id   {name?, role?, revoked?}                     (host)
+DELETE /api/devices/:id                        forget a device         (host)
+DELETE /api/devices/me                         disconnect this device
+
+GET    /api/state                              all clipboards + {me: {deviceId, role}}
 POST   /api/clipboards                {name}   create
 PATCH  /api/clipboards/:id            {name}   rename
 POST   /api/clipboards/:id/clear               clear
