@@ -36,6 +36,7 @@ const ICONS = {
   note: '<path d="M15 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M15 3v5h5M8 13h8M8 17h5"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   unlock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8M17 6l3 3M14.5 8.5l2 2"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
   pin: '<path d="M12 17v5M9 10.8V4h6v6.8l3 3.2v2H6v-2z"/>',
   arrowLeft: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
@@ -817,7 +818,11 @@ document.addEventListener('click', (e) => {
  * Ask for a passphrase. confirm=true asks twice (min. 8 characters).
  * Resolves to the passphrase, { secondary: true } if the secondary button was used, or null.
  */
-function passDialog({ title, message, confirm = false, ok = 'OK', secondary = null }) {
+/**
+ * Ask for a passphrase/password. [verify] (async, optional) checks it before the dialog closes and
+ * returns an error message to show, or nothing when it's accepted.
+ */
+function passDialog({ title, message, confirm = false, ok = 'OK', secondary = null, noun = 'passphrase', min = 8, verify = null }) {
   const dlg = $('#dlg-pass');
   const p1 = $('#pass-1');
   const p2 = $('#pass-2');
@@ -826,6 +831,11 @@ function passDialog({ title, message, confirm = false, ok = 'OK', secondary = nu
   $('#pass-message').textContent = message || '';
   p1.value = '';
   p2.value = '';
+  const Noun = noun[0].toUpperCase() + noun.slice(1);
+  p1.placeholder = Noun;
+  p1.setAttribute('aria-label', Noun);
+  p2.placeholder = `Repeat ${noun}`;
+  p2.setAttribute('aria-label', `Repeat ${noun}`);
   p2.hidden = !confirm;
   p1.autocomplete = confirm ? 'new-password' : 'current-password';
   err.hidden = true;
@@ -836,11 +846,17 @@ function passDialog({ title, message, confirm = false, ok = 'OK', secondary = nu
   return new Promise((resolve) => {
     const finish = (v) => { cleanup(); if (dlg.open) dlg.close(); resolve(v); };
     const fail = (m) => { err.textContent = m; err.hidden = false; p1.focus(); };
-    const onSubmit = (e) => {
+    const onSubmit = async (e) => {
       e.preventDefault();
-      if (!p1.value) return fail('Enter a passphrase.');
-      if (confirm && p1.value.length < 8) return fail('Use at least 8 characters.');
-      if (confirm && p1.value !== p2.value) return fail("The passphrases don't match.");
+      if (!p1.value) return fail(`Enter a ${noun}.`);
+      if (confirm && p1.value.length < min) return fail(`Use at least ${min} characters.`);
+      if (confirm && p1.value !== p2.value) return fail(`The ${noun}s don't match.`);
+      if (verify) {
+        const okBtn = $('#pass-ok');
+        okBtn.disabled = true;
+        const problem = await verify(p1.value).finally(() => { okBtn.disabled = false; });
+        if (problem) { p1.select(); return fail(problem); }
+      }
       finish(p1.value);
     };
     const onCancel = () => finish(null);
@@ -1346,6 +1362,7 @@ function setupThemeMenu() {
   }));
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    closeGroupMenu(); // only one menu open at a time
     menu.hidden = !menu.hidden;
     btn.setAttribute('aria-expanded', String(!menu.hidden));
     if (!menu.hidden) (menu.querySelector('.active') || menu.firstChild).focus();
@@ -1373,19 +1390,58 @@ function groupAudience() {
 }
 
 function ensureGroup() {
-  if (!state.groups.some((g) => g.id === state.groupId)) {
+  if (!state.groups.some((g) => g.id === state.groupId && !g.locked)) {
     state.groupId = (state.groups.find((g) => g.isDefault) || state.groups[0])?.id || null;
   }
 }
 
-function setGroup(id) {
+const ACCESS_LABEL = { all: 'Open to every device', password: 'Password', members: 'Invited only' };
+const groupIcon = (g) => (g.access === 'all' ? 'users' : g.access === 'password' ? 'key' : 'lock');
+
+/** Join a password group: ask for its password (checked by the server), then open it. */
+async function joinGroup(g) {
+  const pw = await passDialog({
+    title: `Join "${g.name}"`,
+    message: 'Enter the group password. You only need it once on this device.',
+    noun: 'password',
+    ok: 'Join',
+    verify: async (password) => {
+      try {
+        await api('POST', `/api/groups/${g.id}/join`, { password });
+        return null;
+      } catch (err) {
+        return err.reason === 'group_password' ? 'Wrong password. Try again.' : err.message;
+      }
+    },
+  });
+  if (!pw) return;
+  await loadState();
+  setGroup(g.id, `You joined "${g.name}"`);
+}
+
+async function leaveGroup(g) {
+  const yes = await confirmDialog({
+    title: `Leave "${g.name}"?`,
+    message: g.access === 'password'
+      ? "Its clipboards and shared notes disappear from this device. You can join again with the group password."
+      : "Its clipboards and shared notes disappear from this device. You'll need a new invitation to come back.",
+    ok: 'Leave group',
+    danger: true,
+  });
+  if (!yes || !(await attempt(() => api('POST', `/api/groups/${g.id}/leave`), `You left "${g.name}"`))) return;
+  await loadState();
+}
+
+function setGroup(id, message) {
+  const target = state.groups.find((g) => g.id === id);
+  if (target?.locked) return joinGroup(target);
   if (id === state.groupId) return;
   if (state.editing) cancelEdit();
   state.groupId = id;
   store.set('clipbox.group', id);
   render();
   if (typeof Notes !== 'undefined') Notes.onShared(null);
-  toast(`Switched to ${currentGroup()?.name || 'group'}`);
+  toast(message || `Switched to ${currentGroup()?.name || 'group'}`);
 }
 
 function closeGroupMenu() {
@@ -1403,12 +1459,24 @@ function renderGroupSwitcher() {
     b.className = `menu-item${g.id === state.groupId ? ' active' : ''}`;
     b.setAttribute('role', 'menuitemradio');
     b.setAttribute('aria-checked', String(g.id === state.groupId));
-    b.innerHTML = `${icon(g.access === 'all' ? 'users' : 'lock')}<span class="menu-label"></span>${icon('check')}`;
+    b.innerHTML = `${icon(g.locked ? 'lock' : groupIcon(g))}<span class="menu-label"></span>${g.locked ? '<span class="menu-hint">Join</span>' : icon('check')}`;
     b.querySelector('.menu-label').textContent = g.name;
-    b.title = g.access === 'all' ? 'Visible to every device' : 'Only invited devices';
+    b.title = g.locked ? 'Password protected: enter the password to join' : ACCESS_LABEL[g.access] || '';
     b.addEventListener('click', () => { closeGroupMenu(); setGroup(g.id); });
     return b;
   });
+  const cur = currentGroup();
+  if (cur && !host && !cur.isDefault && cur.access !== 'all') {
+    const sep = document.createElement('div');
+    sep.className = 'menu-sep';
+    const l = document.createElement('button');
+    l.type = 'button';
+    l.className = 'menu-item';
+    l.innerHTML = `${icon('logout')}<span class="menu-label"></span>`;
+    l.querySelector('.menu-label').textContent = `Leave "${cur.name}"`;
+    l.addEventListener('click', () => { closeGroupMenu(); leaveGroup(cur); });
+    items.push(sep, l);
+  }
   if (host) {
     const sep = document.createElement('div');
     sep.className = 'menu-sep';
@@ -1445,10 +1513,10 @@ async function patchGroup(g, body, okMsg) {
 function buildGroupRow(g, devices) {
   const li = document.createElement('li');
   li.className = 'group-row';
-  li.innerHTML = `<div class="group-head">${icon(g.access === 'all' ? 'users' : 'lock')}
+  li.innerHTML = `<div class="group-head">${icon(groupIcon(g))}
       <div class="group-main"><button type="button" class="device-name"></button><div class="device-meta"></div></div>
       <select class="role-select" aria-label="Who can see this group">
-        <option value="all">Everyone</option><option value="members">Invited only</option>
+        <option value="all">Open</option><option value="password">Password</option><option value="members">Invited only</option>
       </select>
       <div class="row-actions"></div></div>`;
   const name = li.querySelector('.device-name');
@@ -1460,14 +1528,29 @@ function buildGroupRow(g, devices) {
   });
   const clips = state.clipboards.filter((c) => c.groupId === g.id).length;
   const notes = (state.notes || []).filter((n) => n.groupId === g.id).length;
+  const m = (g.members || []).length;
+  const who = g.access === 'all' ? 'Visible to every device'
+    : g.access === 'password' ? `Password · ${m} member${m === 1 ? '' : 's'} + host`
+      : `${m} member${m === 1 ? '' : 's'} + host`;
   li.querySelector('.device-meta').textContent =
-    `${g.access === 'all' ? 'Visible to every device' : `${(g.members || []).length} member${(g.members || []).length === 1 ? '' : 's'} + host`} · ${clips} clipboard${clips === 1 ? '' : 's'} · ${notes} shared note${notes === 1 ? '' : 's'}`;
+    `${who} · ${clips} clipboard${clips === 1 ? '' : 's'} · ${notes} shared note${notes === 1 ? '' : 's'}`;
 
   const sel = li.querySelector('.role-select');
   sel.value = g.access;
   sel.disabled = g.isDefault;
-  sel.title = g.isDefault ? 'Everyone is always visible to every device' : '';
-  sel.addEventListener('change', () => patchGroup(g, { access: sel.value }, sel.value === 'all' ? 'Now visible to every device' : 'Now invite-only'));
+  sel.title = g.isDefault ? 'Everyone is always visible to every device'
+    : 'Open: every device sees it. Password: every device sees it locked and joins with the password. Invited only: hidden from non-members.';
+  sel.addEventListener('change', async () => {
+    const access = sel.value;
+    const body = { access };
+    if (access === 'password') {
+      const pw = await askGroupPassword(g.name);
+      if (!pw) { sel.value = g.access; return; }
+      body.password = pw;
+    }
+    const msg = { all: 'Now open to every device', password: 'Now password protected', members: 'Now invite-only' }[access];
+    patchGroup(g, body, msg);
+  });
 
   const actions = li.querySelector('.row-actions');
   const btn = (ic, tip, cls, fn) => {
@@ -1481,6 +1564,12 @@ function buildGroupRow(g, devices) {
     actions.append(b);
   };
   btn('qr', 'Invite a device (QR code)', '', () => { $('#dlg-groups').close(); openConnect(g.id); });
+  if (g.access === 'password') {
+    btn('key', 'Change password', '', async () => {
+      const pw = await askGroupPassword(g.name, true);
+      if (pw) patchGroup(g, { password: pw }, 'Password changed. Existing members stay in the group.');
+    });
+  }
   if (!g.isDefault) {
     btn('trash', 'Delete group', 'danger', async () => {
       const yes = await confirmDialog({
@@ -1496,7 +1585,7 @@ function buildGroupRow(g, devices) {
     });
   }
 
-  if (g.access === 'members') {
+  if (g.access !== 'all') {
     const box = document.createElement('div');
     box.className = 'member-list';
     const others = devices.filter((d) => d.role !== 'host' || (g.members || []).includes(d.id));
@@ -1520,6 +1609,17 @@ function buildGroupRow(g, devices) {
     li.append(box);
   }
   return li;
+}
+
+/** New password for a group (entered twice). */
+function askGroupPassword(name, change = false) {
+  return passDialog({
+    title: change ? `New password for "${name}"` : `Password for "${name}"`,
+    message: change
+      ? 'Devices that already joined stay in the group; new devices need the new password. Remove members below if needed.'
+      : 'Every device sees this group with a lock and can join by entering this password once.',
+    confirm: true, noun: 'password', min: 4, ok: change ? 'Change password' : 'Set password',
+  });
 }
 
 // ── views ────────────────────────────────────────────────────
@@ -1582,6 +1682,8 @@ function wire() {
   $('#btn-devices').addEventListener('click', openDevices);
   $('#btn-group').addEventListener('click', (e) => {
     e.stopPropagation();
+    $('#theme-menu').hidden = true; // only one menu open at a time
+    $('#btn-theme').setAttribute('aria-expanded', 'false');
     const menu = $('#group-menu');
     menu.hidden = !menu.hidden;
     $('#btn-group').setAttribute('aria-expanded', String(!menu.hidden));
@@ -1593,12 +1695,25 @@ function wire() {
     e.preventDefault();
     const name = $('#group-new-name').value.trim();
     if (!name) return $('#group-new-name').focus();
-    const g = await attempt(() => api('POST', '/api/groups', { name, access: 'members' }), `Group "${name}" created`);
+    const access = $('#group-new-access').value;
+    const password = $('#group-new-password').value;
+    if (access === 'password' && password.length < 4) {
+      toast('Use a group password of at least 4 characters.', 'error');
+      return $('#group-new-password').focus();
+    }
+    const body = { name, access, ...(access === 'password' ? { password } : {}) };
+    const g = await attempt(() => api('POST', '/api/groups', body), `Group "${name}" created`);
     if (g) {
       $('#group-new-name').value = '';
+      $('#group-new-password').value = '';
       await loadState();
       await renderGroups();
     }
+  });
+  $('#group-new-access').addEventListener('change', () => {
+    const pw = $('#group-new-access').value === 'password';
+    $('#group-new-password').hidden = !pw;
+    if (pw) $('#group-new-password').focus();
   });
   $('#btn-logout').addEventListener('click', logout);
 
