@@ -140,6 +140,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { g.privateNotes.create(title, body, listOf("unsynced")) }
             }
             ready = true
+            withContext(Dispatchers.IO) { runCatching { cleanShareCache() } }
             activeProfile?.let(g.sync::start)
             launch { g.sync.events.collect(::onSyncEvent) }
             snapshot.collect { onSnapshot() }
@@ -426,6 +427,152 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (_: Exception) {
             null
         }
+    }
+
+    // ── files & images ───────────────────────────────────────────
+    /** Files shared into ClipBox from another app, waiting for the user to pick a clipboard. */
+    var pendingShareFiles by mutableStateOf<List<android.net.Uri>>(emptyList())
+
+    private data class LocalFile(val name: String, val mime: String, val size: Long)
+
+    private fun describe(uri: android.net.Uri): LocalFile {
+        val cr = getApplication<Application>().contentResolver
+        var name: String? = null
+        var size = -1L
+        cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                name = c.getString(0)
+                if (!c.isNull(1)) size = c.getLong(1)
+            }
+        }
+        val fileName = (name ?: uri.lastPathSegment ?: "file").substringAfterLast('/').ifBlank { "file" }
+        val mime = cr.getType(uri)
+            ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileName.substringAfterLast('.', "").lowercase())
+            ?: "application/octet-stream"
+        return LocalFile(fileName, mime, size)
+    }
+
+    /** Upload picked or shared files to a clipboard (needs a connection: files aren't queued offline). */
+    fun uploadUris(clipboardId: String, uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val token = g.sync.token
+            val base = (connection.value as? Connection.Online)?.base
+            if (token == null || base == null) {
+                msg("Files can only be added while you're connected to the server.", error = true)
+                return@launch
+            }
+            val max = snapshot.value?.maxFileBytes ?: (25L * 1024 * 1024)
+            val cr = getApplication<Application>().contentResolver
+            var added = 0
+            var last = ""
+            for (uri in uris) {
+                val f = withContext(Dispatchers.IO) { runCatching { describe(uri) }.getOrNull() }
+                if (f == null) { msg("Couldn't read a shared file.", error = true); continue }
+                if (f.size > max) { msg("\"${f.name}\" is too large (max ${max / 1048576} MB).", error = true); continue }
+                if (f.size == 0L) continue
+                try {
+                    val item = g.sync.api.uploadFile(base, token, clipboardId, f.name, f.mime, f.size) {
+                        cr.openInputStream(uri) ?: throw java.io.IOException("Can't open ${f.name}")
+                    }
+                    g.sync.applyItem(clipboardId, item)
+                    added++
+                    last = f.name
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    msg("\"${f.name}\" wasn't added: ${e.message}", error = true)
+                }
+            }
+            if (added == 1) msg("Added $last") else if (added > 1) msg("Added $added files")
+        }
+    }
+
+    private val sharedDir get() = java.io.File(getApplication<Application>().cacheDir, "shared").apply { mkdirs() }
+
+    /** Download a clipboard file into the share cache (reused if already there). */
+    private suspend fun cachedFile(item: ClipItem): java.io.File? {
+        val safe = (item.name ?: "file").replace(Regex("[^\\w.\\- ]"), "_").take(80)
+        val f = java.io.File(sharedDir, "${item.id}_$safe")
+        if (f.exists() && f.length() == item.size) return f
+        return try {
+            val token = g.sync.token ?: throw ApiException(0, "Not connected.")
+            g.sync.api.downloadTo(g.sync.base(), token, item.id, f)
+            f
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            f.delete()
+            msg(if (e is ApiException && e.isOffline) "Connect to the server to open files." else "Couldn't download the file.", error = true)
+            null
+        }
+    }
+
+    private fun contentUri(f: java.io.File): android.net.Uri =
+        androidx.core.content.FileProvider.getUriForFile(getApplication(), "${getApplication<Application>().packageName}.files", f)
+
+    private fun startChooser(intent: android.content.Intent) {
+        try {
+            getApplication<Application>().startActivity(
+                android.content.Intent.createChooser(intent, null).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: android.content.ActivityNotFoundException) {
+            msg("No app on this phone can open this file.", error = true)
+        }
+    }
+
+    fun openItem(item: ClipItem) {
+        viewModelScope.launch {
+            val f = cachedFile(item) ?: return@launch
+            startChooser(
+                android.content.Intent(android.content.Intent.ACTION_VIEW)
+                    .setDataAndType(contentUri(f), item.mime ?: "*/*")
+                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        }
+    }
+
+    fun shareItem(item: ClipItem) {
+        viewModelScope.launch {
+            val f = cachedFile(item) ?: return@launch
+            startChooser(
+                android.content.Intent(android.content.Intent.ACTION_SEND)
+                    .setType(item.mime ?: "application/octet-stream")
+                    .putExtra(android.content.Intent.EXTRA_STREAM, contentUri(f))
+                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        }
+    }
+
+    /** Put an image on the phone's clipboard, so it can be pasted into other apps. */
+    fun copyImage(item: ClipItem) {
+        viewModelScope.launch {
+            val f = cachedFile(item) ?: return@launch
+            val app = getApplication<Application>()
+            clipboardManager.setPrimaryClip(ClipData.newUri(app.contentResolver, item.name ?: "image", contentUri(f)))
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) msg("Image copied")
+        }
+    }
+
+    /** Save a copy wherever the user chose (system file picker). */
+    fun saveItem(item: ClipItem, target: android.net.Uri) {
+        viewModelScope.launch {
+            val f = cachedFile(item) ?: return@launch
+            try {
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(target, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
+                }
+                msg("Saved ${item.name ?: "file"}")
+            } catch (e: Exception) {
+                msg("Couldn't save: ${e.message}", error = true)
+            }
+        }
+    }
+
+    /** Downloaded copies are only for handing to other apps; drop them after a day. */
+    private fun cleanShareCache() {
+        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+        sharedDir.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
     }
 
     // ── shared notes ─────────────────────────────────────────────

@@ -6,12 +6,13 @@ A native Android app (Kotlin + Jetpack Compose) for your ClipBox server: clipboa
 
 - **Connect by QR code.** Scan the code from ClipBox → **Connect** on your computer, or type the address. The app remembers the server, so you only do this once.
 - **Stays connected.** Live updates while the app is open. If the server's address changes, the app tries every address it knows (LAN first, then public HTTPS), and it refuses to connect if a *different* ClipBox answers at a saved address.
-- **Clipboards.** Tap an item to copy it, paste from your phone's clipboard, add text, see images, and manage clipboards.
+- **Clipboards.** Tap an item to copy it, paste from your phone's clipboard, add text, and manage clipboards.
+- **Images and files.** Attach files with **File**. Image and file items can be opened (tap), shared to other apps, saved anywhere via the system file picker, and images can be copied to the phone's clipboard. Uploads need a connection; up to the server's `MAX_FILE_MB`.
 - **Shared notes.** Create, edit, pin, lock and delete them. If someone else edits the same note at the same time, you choose between *Keep mine*, *Use theirs* or *Copy mine*.
 - **Private notes.** Encrypted on the phone and never sent to any server. Includes Trash (30 days) with Undo, plus encrypted backup and restore. Backups (`.cbx`) are interchangeable with the web app.
 - **Lock with fingerprint or screen lock** (Settings → Private notes). Private notes then need your fingerprint/face/PIN to open, lock again after 30 seconds in the background, and can't be screenshotted.
 - **Save as note.** The note icon on a clipboard item (or *Save as note* in the clipboard menu) saves it as a private or shared note; private is the default.
-- **Share to ClipBox.** From any app's share sheet, you choose where the text goes: a clipboard, a new private note, or a new shared note. Nothing is sent automatically.
+- **Share to ClipBox.** From any app's share sheet, you choose where the text goes: a clipboard, a new private note, or a new shared note. Shared **images and files** (one or several) are uploaded to the clipboard you pick. Nothing is sent automatically.
 - **Offline editing.** Shared notes and clipboard items you add while offline are kept on the phone (encrypted) and sent when you reconnect, marked *waiting to sync* until then. If someone else changed a note meanwhile, your version is saved as a separate "(offline copy)" instead of overwriting theirs; nothing is ever silently dropped. Private notes always work offline.
 - **Same design as the web app**, with the same 7 themes.
 - **Settings.** Switch between servers, disconnect, and back up private notes.
