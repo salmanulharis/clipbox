@@ -1,14 +1,15 @@
 {
   "name": "clipbox",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Lightweight self-hosted clipboard sharing across desktop, mobile and tablet browsers, with live sync, QR connect and ngrok/Cloudflare tunnel support.",
   "main": "server/index.js",
   "private": true,
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "check": "node --check server/index.js && node --check server/store.js && node --check server/auth.js && node --check server/tunnel.js && node --check server/network.js && node --check server/config.js && node --check public/app.js && node --check public/theme.js",
-    "test": "node --test test/api.test.mjs test/devices.test.mjs test/migration.test.mjs"
+    "check": "node --check server/index.js && node --check server/store.js && node --check server/auth.js && node --check server/tunnel.js && node --check server/network.js && node --check server/config.js && node --check public/app.js && node --check public/theme.js && node --check public/notes.js && node --check public/private-store.js",
+    "test": "node --test test/api.test.mjs test/devices.test.mjs test/migration.test.mjs test/notes.test.mjs",
+    "test:e2e": "node --test test/e2e/notes.e2e.mjs"
   },
   "keywords": [
     "clipboard",
@@ -36,5 +37,8 @@
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "playwright": "^1.65.1"
+  }
 }
