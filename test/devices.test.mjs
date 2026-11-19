@@ -3,6 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
 import { startServer, call, cookieHeader, bearer, REMOTE } from './helpers.mjs';
 
 let srv;
@@ -162,4 +163,29 @@ test('raw device tokens are never written to disk', async () => {
   const db = readFileSync(join(srv.dataDir, 'db.json'), 'utf8');
   assert.equal(db.includes(p.deviceToken), false);
   assert.ok(db.includes(p.deviceId));
+});
+
+test('scripts (curl, health checks) are not recorded as devices; browsers are', async () => {
+  /** GET like curl does: plain HTTP, no Fetch Metadata headers. */
+  const raw = (path, headers) => new Promise((resolve, reject) => {
+    httpRequest(`${B}${path}`, { headers }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, cookies: res.headers['set-cookie'] || [], data: JSON.parse(body) }));
+    }).on('error', reject).end();
+  });
+  const count = async () => (await api('GET', '/api/devices')).data.devices.length;
+  const before = await count();
+  for (let i = 0; i < 3; i++) {
+    const r = await raw('/api/state', { 'User-Agent': 'curl/8.9.1' });
+    assert.equal(r.status, 200, 'scripts still get the state');
+    assert.equal(r.data.me.deviceId, null);
+    assert.equal(r.cookies.some((c) => c.startsWith('clipbox_device=')), false);
+  }
+  assert.equal(await count(), before, 'no device records for scripts');
+
+  const browser = await raw('/api/state', { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36' });
+  assert.match(browser.data.me.deviceId, /^dev_/);
+  assert.ok(browser.cookies.some((c) => c.startsWith('clipbox_device=')));
+  assert.equal(await count(), before + 1);
 });

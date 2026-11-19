@@ -76,6 +76,9 @@ const state = {
   groups: [],
   groupId: store.get('clipbox.group'),
 };
+/** Group named by a group invitation (/join redirects to /?group=…). */
+const invitedGroup = new URLSearchParams(location.search).get('group');
+if (invitedGroup) state.groupId = invitedGroup;
 /** Clipboards of the group currently shown. */
 const groupClipboards = () => state.clipboards.filter((c) => c.groupId === state.groupId);
 const currentGroup = () => state.groups.find((g) => g.id === state.groupId) || null;
@@ -1664,6 +1667,10 @@ async function start() {
   $('#login').hidden = true;
   $('#app').hidden = false;
   $('#btn-logout').hidden = !state.session.required;
+  if (invitedGroup && currentGroup()?.id === invitedGroup) {
+    store.set('clipbox.group', invitedGroup);
+    toast(`You joined "${currentGroup().name}"`);
+  }
   if (location.search) history.replaceState(null, '', '/');
   connectSync();
   setView(store.get('clipbox.view') || 'clipboards');

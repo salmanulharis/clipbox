@@ -229,13 +229,14 @@ Groups split one server into separate spaces. Each group has its own clipboards 
 
 - **Everyone** is the default group. Every device sees it, and everything created before groups existed lives there. It can't be deleted.
 - **New groups are invite-only.** As the host, open the group menu next to *Clipboards / Notes* → **Manage groups**, and create one (it starts with a *General* clipboard). Switch a group's access between *Invited only* and *Everyone*, rename it, tick which devices are members, or delete it (this deletes its clipboards, files and shared notes).
-- **Inviting a device:** the QR button on a group (or the *Add the device to* selector under **Connect**) shows a code that signs the new device in **and** adds it to that group. Invitation codes always carry a one-time token, even on the LAN. The Android app opens the invited group straight away.
+- **Inviting a device:** the QR button on a group (or the *Add the device to* selector under **Connect**) shows a code that signs the new device in **and** adds it to that group. Invitation codes always carry a one-time token, even on the LAN. Browsers and the Android app open the invited group straight away.
+- **From your phone:** if the Android app is the host (connected with the server password), it can manage groups too: **Settings → Manage groups**.
 - **Switching:** use the group menu in the top bar (web) or the group name next to the scan button (Android). Each device remembers the last group it had open.
 - **Who sees what:** a device sees *Everyone*, open groups, and the invite-only groups it's a member of. The host sees every group. For every other device, an invite-only group doesn't exist: its clipboards, notes, files and live updates are never sent, and its URLs answer `404`.
 
 ### Devices & roles
 
-Every browser or app that opens ClipBox is recorded as a **device**. Each device has one of three roles:
+Every browser or app that opens ClipBox is recorded as a **device** (scripts such as `curl` are not). Each device has one of three roles:
 
 | Role | Who gets it | Can |
 |---|---|---|

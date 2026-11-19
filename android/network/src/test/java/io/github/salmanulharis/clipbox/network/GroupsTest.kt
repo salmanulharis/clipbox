@@ -179,4 +179,80 @@ class GroupsTest {
         assertFalse(e.pending.value.contains(local))
         e.clear()
     }
+
+    @Test fun `host group management calls send the right requests`() = runBlocking {
+        val seen = Collections.synchronizedList(mutableListOf<String>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                seen += "${request.method} ${request.path} ${request.body.readUtf8()}"
+                return when {
+                    request.path == "/api/devices" -> MockResponse().setBody(
+                        """{"devices":[{"id":"dev_a","name":"Pixel","platform":"android","role":"member","revoked":false,"app":true,"lastSeenAt":5,"current":false},
+                                       {"id":"dev_b","name":"Chrome","role":"viewer","revoked":true}]}""",
+                    )
+                    request.path!!.startsWith("/api/connect") -> MockResponse().setBody(
+                        """{"urls":[{"kind":"public","label":"Public","url":"https://x.example","link":"https://x.example/join?t=T#cb1.srv_1","blocked":false},
+                                    {"kind":"local","label":"Wi-Fi","url":"http://192.168.0.5:3210","link":"http://192.168.0.5:3210/join?t=T#cb1.srv_1"}],
+                           "tokenMinutes":10,"group":{"id":"grp_fam","name":"Family","access":"members"}}""",
+                    )
+                    request.method == "DELETE" -> MockResponse().setBody("""{"ok":true}""")
+                    else -> MockResponse().setResponseCode(if (request.method == "POST") 201 else 200).setBody(family.replace("\"memberCount\":2", "\"members\":[\"dev_a\"]"))
+                }
+            }
+        }
+        server.start(InetAddress.getByName("127.0.0.1"), 0)
+        val api = ClipBoxApi()
+        val base = "http://127.0.0.1:${server.port}"
+
+        val devices = api.devices(base, "t")
+        assertEquals(listOf("dev_a", "dev_b"), devices.map { it.id })
+        assertTrue(devices[0].app)
+        assertTrue(devices[1].revoked)
+        assertEquals(Role.VIEWER, devices[1].role)
+
+        val created = api.createGroup(base, "t", "Family")
+        assertEquals(listOf("dev_a"), created.members)
+        assertEquals(1, created.memberCount)
+        api.updateGroup(base, "t", "grp_fam", members = listOf("dev_a", "dev_c"))
+        api.updateGroup(base, "t", "grp_fam", access = "all")
+        api.deleteGroup(base, "t", "grp_fam")
+        val invite = api.invite(base, "t", "grp_fam")
+        assertEquals(2, invite.links.size)
+        assertTrue(invite.links[0].public)
+        assertEquals("Family", invite.groupName)
+        assertEquals(10, invite.minutes)
+
+        assertTrue(seen.toString(), seen.any { it.startsWith("POST /api/groups ") && it.contains("\"name\":\"Family\"") && it.contains("\"access\":\"members\"") })
+        assertTrue(seen.toString(), seen.any { it.startsWith("PATCH /api/groups/grp_fam ") && it.contains("\"members\":[\"dev_a\",\"dev_c\"]") && !it.contains("access") })
+        assertTrue(seen.toString(), seen.any { it.startsWith("PATCH /api/groups/grp_fam ") && it.contains("\"access\":\"all\"") && !it.contains("members") })
+        assertTrue(seen.toString(), seen.any { it.startsWith("DELETE /api/groups/grp_fam") })
+        assertTrue(seen.toString(), seen.any { it.startsWith("GET /api/connect?group=grp_fam") })
+    }
+
+    @Test fun `deleting a group locally removes its clipboards and notes`() = runBlocking {
+        server.start(InetAddress.getByName("127.0.0.1"), 0)
+        val (e, p) = engine()
+        SharedCache(dir, box).write(
+            "srv_1",
+            Json.snapshot(
+                JSONObject(
+                    state(
+                        1, "$everyone,$family",
+                        """{"id":"c1","name":"General","groupId":"grp_everyone","items":[]},{"id":"c2","name":"Home","groupId":"grp_fam","items":[]}""",
+                        """{"id":"n_1","title":"Shared","groupId":"grp_everyone","version":1},{"id":"n_2","title":"Family","groupId":"grp_fam","version":1}""",
+                    ),
+                ),
+            ),
+        )
+        e.start(p.copy(urls = listOf("http://127.0.0.1:9")))
+        e.stop()
+        e.applyGroup(Group("grp_fam", "Family & friends", "all", isDefault = false))
+        assertEquals("Family & friends", e.snapshot.value!!.groups.first { it.id == "grp_fam" }.name)
+        e.removeGroup("grp_fam")
+        val s = e.snapshot.value!!
+        assertEquals(listOf("grp_everyone"), s.groups.map { it.id })
+        assertEquals(listOf("c1"), s.clipboards.map { it.id })
+        assertEquals(listOf("n_1"), s.notes.map { it.id })
+        e.clear()
+    }
 }

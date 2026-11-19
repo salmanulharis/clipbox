@@ -472,6 +472,16 @@ class SyncEngine(
     fun removeNote(id: String) = server?.let { set(it.copy(notes = it.notes.filterNot { n -> n.id == id })) }
     fun applyClipboard(cb: Clipboard) = server?.let { set(withClipboard(it, cb, null)) }
     fun removeClipboard(id: String) = server?.let { set(it.copy(clipboards = it.clipboards.filterNot { c -> c.id == id })) }
+    /** A group this device created or changed (the "groups" live event follows with the full state). */
+    fun applyGroup(gr: Group) = server?.let { s ->
+        set(s.copy(groups = if (s.groups.any { it.id == gr.id }) s.groups.map { if (it.id == gr.id) gr else it } else s.groups + gr))
+    }
+
+    /** A deleted group takes its clipboards and shared notes with it. */
+    fun removeGroup(id: String) = server?.let { s ->
+        set(s.copy(groups = s.groups.filterNot { it.id == id }, clipboards = s.clipboards.filterNot { it.groupId == id }, notes = s.notes.filterNot { it.groupId == id }))
+    }
+
     fun applyItem(clipboardId: String, item: ClipItem) = server?.let { s ->
         set(s.copy(clipboards = s.clipboards.map { c -> if (c.id == clipboardId && c.items.none { it.id == item.id }) c.copy(items = listOf(item) + c.items) else c }))
     }

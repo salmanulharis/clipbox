@@ -136,6 +136,19 @@ fun SettingsTab(vm: AppViewModel) {
             }
         }
 
+        if (profile != null && vm.role == io.github.salmanulharis.clipbox.core.model.Role.HOST) {
+            Section("Groups") {
+                val groups = vm.snapshot.collectAsStateWithLifecycle().value?.groups.orEmpty()
+                Text(
+                    if (groups.size < 2) "Everything is in the Everyone group. Create groups to keep clipboards and shared notes apart, for example Family and Work."
+                    else "${groups.size} groups. This phone is the host, so it sees all of them.",
+                    style = MaterialTheme.typography.bodyMedium, color = p.muted,
+                )
+                Spacer(Modifier.height(4.dp))
+                ActionRow(Ic.Users, "Manage groups") { vm.openGroups() }
+            }
+        }
+
         Section("Private notes") {
             val secure = AppLock.deviceSecure(context)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

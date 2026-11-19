@@ -36,12 +36,14 @@ object Json {
 
     fun group(o: JSONObject): Group {
         val id = o.getString("id")
+        val members = o.optJSONArray("members")?.let { a -> List(a.length()) { a.getString(it) } }
         return Group(
             id = id,
             name = o.optString("name").ifBlank { "Group" },
             access = if (o.optString("access") == "members") "members" else "all",
             isDefault = o.optBoolean("isDefault", id == Group.DEFAULT_ID),
-            memberCount = o.optJSONArray("members")?.length() ?: o.optInt("memberCount", 0),
+            memberCount = members?.size ?: o.optInt("memberCount", 0),
+            members = members,
         )
     }
 
@@ -107,6 +109,7 @@ object Json {
 
     fun toJson(g: Group): JSONObject = JSONObject()
         .put("id", g.id).put("name", g.name).put("access", g.access).put("isDefault", g.isDefault).put("memberCount", g.memberCount)
+        .apply { g.members?.let { put("members", JSONArray(it)) } }
 
     fun toJson(s: Snapshot): JSONObject = JSONObject()
         .put("rev", s.rev).put("boot", s.boot)

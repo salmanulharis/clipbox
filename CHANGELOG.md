@@ -12,6 +12,8 @@ All notable changes to ClipBox. Versions apply to both the server/web app and th
   - Enforced on the server for every route, file and live event. Devices outside a group get `404`s and empty `skip` events, so nothing leaks, not even ids.
   - Web: group switcher, **Manage groups** dialog, and an invite selector under **Connect**.
   - Android: group switcher in the top bar, per-group clipboards and shared notes, offline notes keep their group, and group invitations open the invited group.
+  - Android hosts can manage groups in the app: create, rename, invite-only switch, members, invitation QR codes, delete.
+  - A browser that joins with a group invitation opens that group.
 - `GET /api/info` reports `apiVersion: 3` and `features: ["groups", "notes", "devices"]`.
 
 ### Changed
@@ -19,6 +21,7 @@ All notable changes to ClipBox. Versions apply to both the server/web app and th
 - Older Android app versions keep working; they show the clipboards and notes of all groups they can see.
 
 ### Fixed
+- Scripts and health checks (e.g. `curl …/api/state`) no longer create an anonymous "Browser" device on every call; only real browsers are recorded as devices.
 - Android: `ContextCastToActivity` lint error in the screenshot blocker.
 
 ## [1.4.0] - 2026-11-19

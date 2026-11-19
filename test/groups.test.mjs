@@ -123,6 +123,7 @@ test('browser /join with a group invitation adds membership', async () => {
   const join = await api('GET', `/join?t=${encodeURIComponent(c.token)}`, undefined, REMOTE);
   // Remote join only works with a password; this server has one (test-password).
   assert.equal(join.status, 302);
+  assert.equal(join.headers.get('location'), `/?group=${g.id}`, 'the browser opens the invited group');
   const cookie = join.headers.getSetCookie().map((x) => x.split(';')[0]).join('; ');
   const { data: s } = await api('GET', '/api/state', undefined, { ...REMOTE, Cookie: cookie });
   assert.ok(s.groups.some((x) => x.id === g.id));

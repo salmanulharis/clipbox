@@ -2,6 +2,7 @@ package io.github.salmanulharis.clipbox.network
 
 import io.github.salmanulharis.clipbox.core.model.ClipItem
 import io.github.salmanulharis.clipbox.core.model.Clipboard
+import io.github.salmanulharis.clipbox.core.model.Group
 import io.github.salmanulharis.clipbox.core.model.Json
 import io.github.salmanulharis.clipbox.core.model.Role
 import io.github.salmanulharis.clipbox.core.model.SharedNote
@@ -50,6 +51,24 @@ data class PairResult(
     /** Group the invitation added this device to (null: none / older server). */
     val groupId: String? = null,
 )
+
+/** A device as the host sees it in GET /api/devices. */
+data class DeviceInfo(
+    val id: String,
+    val name: String,
+    val platform: String,
+    val role: Role,
+    val revoked: Boolean,
+    val app: Boolean,
+    val lastSeenAt: Long,
+    val current: Boolean,
+)
+
+/** One way to reach the server, as a QR-ready link (GET /api/connect). */
+data class InviteLink(val label: String, val link: String, val public: Boolean, val blocked: Boolean)
+
+/** Links for connecting another device, optionally inviting it to a group. */
+data class Invite(val links: List<InviteLink>, val minutes: Int, val groupName: String?)
 
 /**
  * Thin client for the ClipBox HTTP API. Every call takes the base URL and the device token.
@@ -144,6 +163,53 @@ class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val cert
 
     suspend fun deleteNote(base: String, token: String, id: String) {
         call(http, request(base, "/api/notes/$id", token, "DELETE"))
+    }
+
+    // ── groups & devices (host) ──────────────────────────────────
+    suspend fun devices(base: String, token: String): List<DeviceInfo> {
+        val arr = call(http, request(base, "/api/devices", token)).optJSONArray("devices") ?: JSONArray()
+        return List(arr.length()) { i ->
+            val o = arr.getJSONObject(i)
+            DeviceInfo(
+                id = o.getString("id"),
+                name = o.optString("name").ifBlank { "Device" },
+                platform = o.optString("platform", "other"),
+                role = Role.parse(o.optString("role")),
+                revoked = o.optBoolean("revoked"),
+                app = o.optBoolean("app"),
+                lastSeenAt = o.optLong("lastSeenAt"),
+                current = o.optBoolean("current"),
+            )
+        }
+    }
+
+    suspend fun createGroup(base: String, token: String, name: String, access: String = "members"): Group =
+        Json.group(call(http, request(base, "/api/groups", token, "POST", JSONObject().put("name", name).put("access", access))))
+
+    suspend fun updateGroup(
+        base: String, token: String, id: String,
+        name: String? = null, access: String? = null, members: List<String>? = null,
+    ): Group {
+        val o = JSONObject()
+        name?.let { o.put("name", it) }
+        access?.let { o.put("access", it) }
+        members?.let { o.put("members", JSONArray(it)) }
+        return Json.group(call(http, request(base, "/api/groups/$id", token, "PATCH", o)))
+    }
+
+    suspend fun deleteGroup(base: String, token: String, id: String) {
+        call(http, request(base, "/api/groups/$id", token, "DELETE"))
+    }
+
+    /** QR links for adding a device; with [groupId], scanning one also adds the device to that group. */
+    suspend fun invite(base: String, token: String, groupId: String?): Invite {
+        val q = groupId?.let { "?group=" + java.net.URLEncoder.encode(it, "UTF-8") }.orEmpty()
+        val o = call(http, request(base, "/api/connect$q", token))
+        val arr = o.optJSONArray("urls") ?: JSONArray()
+        val links = List(arr.length()) { arr.getJSONObject(it) }.map {
+            InviteLink(it.optString("label"), it.optString("link"), it.optString("kind") == "public", it.optBoolean("blocked"))
+        }.filter { it.link.isNotBlank() }
+        return Invite(links, o.optInt("tokenMinutes", 10), o.optJSONObject("group")?.optString("name"))
     }
 
     // ── clipboards ───────────────────────────────────────────────
