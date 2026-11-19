@@ -257,6 +257,7 @@ function renderMain(cb) {
   document.title = cb ? `${cb.name} · ClipBox` : 'ClipBox';
   $('#btn-copy-all').disabled = !cb || !cb.items.some((i) => i.type === 'text');
   $('#btn-clear').disabled = !n;
+  $('#btn-save-note').disabled = !cb || !cb.items.some((i) => i.type === 'text');
   $('#empty').hidden = n > 0;
   renderItems(cb ? cb.items : []);
 }
@@ -360,6 +361,7 @@ function buildItem(item) {
   const copyLabel = item.type === 'text' || isImage(item) ? 'Copy' : 'Download';
   actions.innerHTML = `
     <button class="icon-btn copy" data-act="copy" data-tip="${copyLabel}" aria-label="${copyLabel}">${icon(copyLabel === 'Copy' ? 'copy' : 'download')}</button>
+    ${item.type === 'text' ? `<button class="icon-btn" data-act="note" data-tip="Save as note" aria-label="Save as note">${icon('note')}</button>` : ''}
     ${item.type === 'text' ? `<button class="icon-btn" data-act="edit" data-tip="Edit" aria-label="Edit">${icon('edit')}</button>` : ''}
     ${item.type === 'file' && copyLabel === 'Copy' ? `<button class="icon-btn" data-act="download" data-tip="Download" aria-label="Download">${icon('download')}</button>` : ''}
     <button class="icon-btn danger" data-act="delete" data-tip="Delete" aria-label="Delete">${icon('trash')}</button>`;
@@ -370,6 +372,7 @@ function buildItem(item) {
     const current = findItem(item.id) || item;
     if (btn.dataset.act === 'copy') copyItem(current, btn);
     else if (btn.dataset.act === 'edit') startEdit(current.id);
+    else if (btn.dataset.act === 'note') saveAsNote({ title: '', body: current.text });
     else if (btn.dataset.act === 'download') download(current);
     else if (btn.dataset.act === 'delete') deleteItem(current.id);
   });
@@ -793,6 +796,98 @@ document.addEventListener('click', (e) => {
     if (!inside) e.target.close();
   }
 });
+
+// ── passphrase dialog ────────────────────────────────────────
+/**
+ * Ask for a passphrase. confirm=true asks twice (min. 8 characters).
+ * Resolves to the passphrase, { secondary: true } if the secondary button was used, or null.
+ */
+function passDialog({ title, message, confirm = false, ok = 'OK', secondary = null }) {
+  const dlg = $('#dlg-pass');
+  const p1 = $('#pass-1');
+  const p2 = $('#pass-2');
+  const err = $('#pass-error');
+  $('#pass-title').textContent = title;
+  $('#pass-message').textContent = message || '';
+  p1.value = '';
+  p2.value = '';
+  p2.hidden = !confirm;
+  p1.autocomplete = confirm ? 'new-password' : 'current-password';
+  err.hidden = true;
+  $('#pass-ok').textContent = ok;
+  const sec = $('#pass-secondary');
+  sec.hidden = !secondary;
+  sec.textContent = secondary || '';
+  return new Promise((resolve) => {
+    const finish = (v) => { cleanup(); if (dlg.open) dlg.close(); resolve(v); };
+    const fail = (m) => { err.textContent = m; err.hidden = false; p1.focus(); };
+    const onSubmit = (e) => {
+      e.preventDefault();
+      if (!p1.value) return fail('Enter a passphrase.');
+      if (confirm && p1.value.length < 8) return fail('Use at least 8 characters.');
+      if (confirm && p1.value !== p2.value) return fail("The passphrases don't match.");
+      finish(p1.value);
+    };
+    const onCancel = () => finish(null);
+    const onSecondary = () => finish({ secondary: true });
+    const cleanup = () => {
+      $('#pass-form').removeEventListener('submit', onSubmit);
+      $('#pass-cancel').removeEventListener('click', onCancel);
+      sec.removeEventListener('click', onSecondary);
+      dlg.removeEventListener('close', onCancel);
+    };
+    $('#pass-form').addEventListener('submit', onSubmit);
+    $('#pass-cancel').addEventListener('click', onCancel);
+    sec.addEventListener('click', onSecondary);
+    dlg.addEventListener('close', onCancel);
+    openDialog(dlg);
+    p1.focus();
+  });
+}
+
+// ── save clipboard content as a note ─────────────────────────
+function saveAsNote({ title, body }) {
+  const dlg = $('#dlg-save-note');
+  const firstLine = (body.split(/\r?\n/).find((l) => l.trim()) || '').trim();
+  $('#save-note-title').value = (title || (firstLine.length <= 80 ? firstLine : '')).slice(0, 200);
+  $('#save-note-preview').textContent = body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+  const canShare = !isViewer() && sync.es?.readyState !== EventSource.CLOSED;
+  const sharedOpt = $('#save-shared-opt');
+  sharedOpt.classList.toggle('disabled', !canShare);
+  sharedOpt.querySelector('input').disabled = !canShare;
+  $('#save-shared-hint').textContent = canShare
+    ? `Visible to everyone connected to ${state.server?.serverName || 'this server'}.`
+    : isViewer() ? 'This device is view-only.' : 'Not available while offline.';
+  const locked = PrivateStore.lockState() === 'locked';
+  $('#save-private-hint').textContent = locked
+    ? "Only in this browser. You'll be asked for your passphrase."
+    : 'Only in this browser. Never sent to the server.';
+  dlg.querySelector('input[value="private"]').checked = true; // always default to private
+  openDialog(dlg);
+  $('#save-note-title').focus();
+
+  const form = $('#save-note-form');
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    const scope = form.querySelector('input[name="save-scope"]:checked').value;
+    const fields = { title: $('#save-note-title').value.trim(), body };
+    $('#save-note-ok').disabled = true;
+    try {
+      if (await Notes.createFrom(scope, fields)) { cleanup(); dlg.close(); }
+    } finally {
+      $('#save-note-ok').disabled = false;
+    }
+  };
+  const onCancel = () => { cleanup(); if (dlg.open) dlg.close(); };
+  const cleanup = () => {
+    form.removeEventListener('submit', onSubmit);
+    $('#save-note-cancel').removeEventListener('click', onCancel);
+    dlg.removeEventListener('close', cleanup);
+  };
+  form.addEventListener('submit', onSubmit);
+  $('#save-note-cancel').addEventListener('click', onCancel);
+  dlg.addEventListener('close', cleanup);
+}
 
 // ── connect (QR) dialog ──────────────────────────────────────
 const connect = { urls: [], selected: 0 };
@@ -1287,6 +1382,12 @@ function wire() {
   $('#btn-clear').addEventListener('click', clearClipboard);
   $('#btn-delete').addEventListener('click', deleteClipboard);
   $('#btn-copy-all').addEventListener('click', (e) => copyAll(e.currentTarget));
+  $('#btn-save-note').addEventListener('click', () => {
+    const cb = active();
+    const texts = cb ? cb.items.filter((i) => i.type === 'text').map((i) => i.text) : [];
+    if (!texts.length) return toast('This clipboard has no text to save', 'error');
+    saveAsNote({ title: cb.name, body: texts.join('\n\n') });
+  });
   $('#btn-connect').addEventListener('click', openConnect);
   $('#btn-scan').addEventListener('click', openScanner);
   $('#btn-devices').addEventListener('click', openDevices);

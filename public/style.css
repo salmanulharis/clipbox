@@ -599,3 +599,38 @@ body.viewer .board-name { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ── save as note / passphrase / locked ──────────────────── */
+.text-input {
+  width: 100%; height: 40px; padding: 0 12px; margin-bottom: 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); outline: 0;
+}
+.text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--bg); }
+.save-preview {
+  margin: 0 0 12px; padding: 10px 12px; max-height: 140px; overflow: auto; border-radius: 8px;
+  background: var(--bg-soft); border: 1px solid var(--border); font-family: var(--mono); font-size: 13px;
+  white-space: pre-wrap; word-break: break-word; color: var(--muted);
+}
+.scope-choice { display: grid; gap: 8px; }
+.scope-opt {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: center; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+}
+.scope-opt input { grid-row: span 2; accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.scope-opt-main { display: flex; align-items: center; gap: 6px; }
+.scope-opt-main .ic { width: 16px; height: 16px; }
+.scope-opt small { color: var(--muted); font-size: 12px; }
+.scope-opt:has(input:checked) { border-color: var(--text); background: var(--bg-soft); }
+.scope-opt.shared:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.scope-opt.shared:has(input:checked) strong, .scope-opt.shared:has(input:checked) .ic { color: var(--accent); }
+.scope-opt.disabled { opacity: .5; cursor: not-allowed; }
+.link-btn { border-color: transparent; background: transparent; color: var(--muted); padding: 0 4px; }
+.link-btn:hover { color: var(--text); background: transparent; text-decoration: underline; }
+#pass-message { margin: 0 0 12px; }
+.locked-panel { text-align: center; padding: 40px 16px; }
+.locked-panel > .ic { width: 36px; height: 36px; color: var(--muted); }
+.locked-panel h3 { margin: 10px 0 4px; font-size: 17px; }
+.locked-panel p { margin: 0 0 16px; }
+.unlock-form { display: flex; gap: 8px; max-width: 360px; margin: 0 auto; }
+.unlock-form .text-input { margin: 0; }
+.banner-buttons { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
