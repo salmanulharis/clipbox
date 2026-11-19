@@ -1,5 +1,7 @@
 package io.github.salmanulharis.clipbox.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -72,6 +74,16 @@ fun ClipboardsTab(vm: AppViewModel) {
     val canAdd = vm.role.canWrite
     val pending by vm.pending.collectAsStateWithLifecycle()
     var saveNote by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var savingItem by remember { mutableStateOf<ClipItem?>(null) }
+    val saveDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val item = savingItem
+        savingItem = null
+        if (uri != null && item != null) vm.saveItem(item, uri)
+    }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val cbId = clipboards.firstOrNull { it.id == vm.activeClipboardId }?.id ?: clipboards.firstOrNull()?.id
+        if (cbId != null && uris.isNotEmpty()) vm.uploadUris(cbId, uris)
+    }
 
     var dialog by remember { mutableStateOf<String?>(null) } // "new" | "rename" | "clear" | "delete"
     var menu by remember { mutableStateOf(false) }
@@ -145,6 +157,12 @@ fun ClipboardsTab(vm: AppViewModel) {
                             Spacer(Modifier.width(6.dp))
                             Text("Paste")
                         }
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedButton(enabled = canWrite, onClick = { pickFiles.launch(arrayOf("*/*")) }) {
+                            Icon(Ic.Attach, null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("File")
+                        }
                         Spacer(Modifier.weight(1f))
                         Button(enabled = draft.isNotBlank(), onClick = {
                             val text = draft
@@ -173,6 +191,8 @@ fun ClipboardsTab(vm: AppViewModel) {
                 canDelete = canWrite && !isPending,
                 pending = isPending,
                 onSaveNote = { saveNote = "" to item.text.orEmpty() },
+                onSaveFile = { savingItem = item; saveDoc.launch(item.name ?: "file") },
+                canTransfer = online,
             ) { vm.deleteItem(active!!.id, item) }
             HorizontalDivider(color = p.border)
         }
@@ -188,11 +208,22 @@ fun ClipboardsTab(vm: AppViewModel) {
 }
 
 @Composable
-private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, pending: Boolean, onSaveNote: () -> Unit, onDelete: () -> Unit) {
+private fun ItemRow(
+    vm: AppViewModel,
+    item: ClipItem,
+    canDelete: Boolean,
+    pending: Boolean,
+    onSaveNote: () -> Unit,
+    onSaveFile: () -> Unit,
+    canTransfer: Boolean,
+    onDelete: () -> Unit,
+) {
     val p = LocalPalette.current
     var expanded by remember(item.id) { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().clickable { if (item.isText) vm.copyText(item.text.orEmpty()) }.padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable {
+            if (item.isText) vm.copyText(item.text.orEmpty()) else if (canTransfer) vm.openItem(item)
+        }.padding(vertical = 10.dp),
         verticalAlignment = Alignment.Top,
     ) {
         Column(Modifier.weight(1f)) {
@@ -238,6 +269,11 @@ private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, pendin
         }
         if (item.isText) IconAction(Ic.Copy, "Copy", tint = p.accent) { vm.copyText(item.text.orEmpty()) }
         if (item.isText) IconAction(Ic.Note, "Save as note") { onSaveNote() }
+        if (!item.isText && canTransfer) {
+            if (item.isImage) IconAction(Ic.Copy, "Copy image", tint = p.accent) { vm.copyImage(item) }
+            IconAction(Ic.Share, "Share") { vm.shareItem(item) }
+            IconAction(Ic.Download, "Save a copy") { onSaveFile() }
+        }
         if (canDelete) IconAction(Ic.Trash, "Delete") { onDelete() }
     }
 }

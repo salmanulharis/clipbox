@@ -80,4 +80,6 @@ data class Snapshot(
     val serverId: String?,
     val serverName: String?,
     val maxNoteBytes: Int,
+    /** Largest file/image the server accepts (MAX_FILE_MB). */
+    val maxFileBytes: Long = 25L * 1024 * 1024,
 )

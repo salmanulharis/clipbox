@@ -112,6 +112,7 @@ fun ClipBoxApp(vm: AppViewModel) {
     }
 
     vm.pendingShare?.let { text -> ShareTargetDialog(vm, text) }
+    if (vm.pendingShareFiles.isNotEmpty()) ShareFilesDialog(vm, vm.pendingShareFiles)
 }
 
 @Composable
@@ -251,6 +252,40 @@ private fun ShareTargetDialog(vm: AppViewModel, text: String) {
                     }
                 } else if (vm.activeProfile != null) {
                     Text("This phone is view-only on ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodySmall, color = p.muted, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = done) { Text("Cancel") } },
+    )
+}
+
+/** Files/images shared into ClipBox: choose which clipboard they're uploaded to. */
+@Composable
+private fun ShareFilesDialog(vm: AppViewModel, files: List<android.net.Uri>) {
+    val p = LocalPalette.current
+    val snapshot by vm.snapshot.collectAsStateWithLifecycle()
+    val connection by vm.connection.collectAsStateWithLifecycle()
+    val online = connection is Connection.Online
+    val done = { vm.pendingShareFiles = emptyList() }
+    AlertDialog(
+        onDismissRequest = done,
+        title = { Text(if (files.size == 1) "Add file to ClipBox" else "Add ${files.size} files to ClipBox") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                when {
+                    vm.activeProfile == null -> Text("Connect to a ClipBox server first.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
+                    !vm.role.canWrite -> Text("This phone is view-only on ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
+                    !online -> Text("Files can only be added while you're connected to ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
+                    else -> snapshot?.clipboards?.forEach { cb ->
+                        ShareOption(Ic.Clipboard, cb.name, "Clipboard on ${vm.activeProfile?.serverName}") {
+                            val list = files
+                            done()
+                            vm.tab = Tab.CLIPBOARDS
+                            vm.activeClipboardId = cb.id
+                            vm.uploadUris(cb.id, list)
+                        }
+                    }
                 }
             }
         },

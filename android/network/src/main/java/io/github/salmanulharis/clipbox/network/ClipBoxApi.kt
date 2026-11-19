@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -165,6 +166,59 @@ class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val cert
         execute(http, request(base, "/files/$itemId", token)).use { res ->
             if (!res.isSuccessful) throw ApiException(res.code, "Could not download the file.")
             res.body!!.bytes()
+        }
+    }
+
+    /** Stream a clipboard file to [target] (no size limit in memory). */
+    suspend fun downloadTo(base: String, token: String, itemId: String, target: java.io.File) = withContext(Dispatchers.IO) {
+        execute(transfer, request(base, "/files/$itemId?download", token)).use { res ->
+            if (!res.isSuccessful) throw ApiException(res.code, "Could not download the file.")
+            target.outputStream().use { out -> res.body!!.byteStream().copyTo(out) }
+        }
+    }
+
+    /**
+     * Upload a file or image to a clipboard. [open] is called once to stream the content,
+     * so large files never sit fully in memory. [size] < 0 means unknown.
+     */
+    suspend fun uploadFile(
+        base: String, token: String, clipboardId: String,
+        name: String, mime: String, size: Long, open: () -> java.io.InputStream,
+    ): ClipItem {
+        val type = (mime.takeIf { it.matches(Regex("[\\w.+-]+/[\\w.+-]+")) } ?: "application/octet-stream").toMediaType()
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = type
+            override fun contentLength() = size
+            override fun writeTo(sink: okio.BufferedSink) {
+                open().use { input -> sink.writeAll(input.source()) }
+            }
+        }
+        val req = Request.Builder()
+            .url(base.trimEnd('/') + "/api/clipboards/$clipboardId/files")
+            .header("X-ClipBox", "1")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $token")
+            .header("X-Filename", encodeFilename(name))
+            .post(body)
+            .build()
+        return Json.clipItem(call(transfer, req))
+    }
+
+    /** Uploads/downloads can take a while on slow Wi-Fi. */
+    private val transfer: OkHttpClient by lazy {
+        http.newBuilder().writeTimeout(5, TimeUnit.MINUTES).readTimeout(5, TimeUnit.MINUTES).build()
+    }
+
+    companion object {
+        /** Percent-encode like JavaScript's encodeURIComponent (the server decodes with decodeURIComponent). */
+        fun encodeFilename(name: String): String {
+            val keep = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+            val sb = StringBuilder()
+            for (b in name.toByteArray(Charsets.UTF_8)) {
+                val c = (b.toInt() and 0xff).toChar()
+                if (b >= 0 && c in keep) sb.append(c) else sb.append('%').append("%02X".format(b.toInt() and 0xff))
+            }
+            return sb.toString()
         }
     }
 

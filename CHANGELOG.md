@@ -11,6 +11,10 @@ All notable changes to ClipBox. Versions apply to both the server/web app and th
 - **Android: fingerprint / screen-lock gate** for private notes, with relock after 30 s in the background and screenshot blocking.
 - **Android: offline editing.** Shared notes and clipboard text added offline sync on reconnect. Conflicting edits are kept as "(offline copy)", and nothing is dropped.
 - **Android: certificate pinning** for self-signed HTTPS on the LAN, using a fingerprint carried in the QR code.
+- **Android: images and files.**
+  - share images/files (one or many) into ClipBox from any app
+  - attach files from the composer
+  - open, share, save and copy image items
 - **Windows:** `npm run autostart:install` starts ClipBox hidden at login and restarts it if it exits.
 
 ### Fixed
