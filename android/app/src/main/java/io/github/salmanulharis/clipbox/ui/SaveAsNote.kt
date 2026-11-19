@@ -63,7 +63,7 @@ fun SaveAsNoteDialog(vm: AppViewModel, initialTitle: String, body: String, onDis
                     when {
                         vm.activeProfile == null -> "Connect to a server to share notes."
                         !vm.role.canWrite -> "This phone is view-only."
-                        else -> "Visible to everyone on ${vm.activeProfile?.serverName}."
+                        else -> "Visible to ${vm.audience()}."
                     },
                     scope == Scope.SHARED, canShare, accent = true,
                 ) { scope = Scope.SHARED }

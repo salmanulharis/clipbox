@@ -81,7 +81,7 @@ fun NotesTab(vm: AppViewModel) {
     val trashCount = privateAll.size - privateActive.size
     val rows: List<NoteItem> = when (scope) {
         Scope.PRIVATE -> privateActive.map { NoteItem(it.id, it.title, it.body, it.tags, it.pinned, it.updatedAt) }
-        Scope.SHARED -> snapshot?.notes.orEmpty().map {
+        Scope.SHARED -> vm.groupNotes(snapshot).map {
             NoteItem(it.id, it.title, it.body, it.tags, it.pinned, it.updatedAt, it.locked,
                 if (it.updatedByName != it.authorName) "by ${it.authorName}, edited by ${it.updatedByName}" else "by ${it.authorName}",
                 vm.canEdit(it), it.id in pending)
@@ -136,7 +136,7 @@ fun NotesTab(vm: AppViewModel) {
                         TextButton(onClick = { vm.screen = Screen.Scanner }) { Text("Connect") }
                     }
                 } else {
-                    Banner(Ic.Users, "Shared — visible to everyone connected to ${vm.activeProfile?.serverName}" + if (!vm.role.canWrite) " (view only)" else "", accent = true)
+                    Banner(Ic.Users, "Shared — visible to ${vm.audience(vm.currentGroup(snapshot))}" + if (!vm.role.canWrite) " (view only)" else "", accent = true)
                     Spacer(Modifier.height(8.dp))
                     ConnectionBanner(vm)
                 }
@@ -163,7 +163,7 @@ fun NotesTab(vm: AppViewModel) {
                     val (t, s) = when {
                         query.isNotBlank() || tag != null -> "No matching notes" to "Try a different search or tag."
                         scope == Scope.PRIVATE -> "No private notes yet" to "They're encrypted on this phone and never leave it unless you share or back them up."
-                        else -> "No shared notes yet" to "Shared notes are visible to everyone on ${vm.activeProfile?.serverName}."
+                        else -> "No shared notes yet" to "Shared notes here are visible to ${vm.audience(vm.currentGroup(snapshot))}."
                     }
                     EmptyState(Ic.Note, t, s)
                 }

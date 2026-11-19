@@ -47,6 +47,8 @@ data class PairResult(
     val serverId: String,
     val serverName: String,
     val urls: List<String>,
+    /** Group the invitation added this device to (null: none / older server). */
+    val groupId: String? = null,
 )
 
 /**
@@ -100,6 +102,7 @@ class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val cert
             serverId = o.getString("serverId"),
             serverName = o.optString("serverName", "ClipBox"),
             urls = List(urls.length()) { urls.getJSONObject(it).optString("url") }.filter { it.isNotBlank() },
+            groupId = o.optString("groupId").takeIf { it.isNotBlank() && it != "null" },
         )
     }
 
@@ -117,10 +120,12 @@ class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val cert
         call(streaming, request(base, "/api/sync?rev=$rev&boot=$boot", token))
 
     // ── shared notes ─────────────────────────────────────────────
-    suspend fun createNote(base: String, token: String, title: String, body: String, tags: List<String>): SharedNote =
-        Json.sharedNote(
-            call(http, request(base, "/api/notes", token, "POST", JSONObject().put("title", title).put("body", body).put("tags", JSONArray(tags)))),
-        )
+    /** Creates a shared note in [groupId] (servers without groups ignore it). */
+    suspend fun createNote(base: String, token: String, title: String, body: String, tags: List<String>, groupId: String? = null): SharedNote {
+        val o = JSONObject().put("title", title).put("body", body).put("tags", JSONArray(tags))
+        groupId?.let { o.put("groupId", it) }
+        return Json.sharedNote(call(http, request(base, "/api/notes", token, "POST", o)))
+    }
 
     suspend fun updateNote(
         base: String, token: String, id: String,
@@ -149,8 +154,11 @@ class ClipBoxApi(private val baseClient: OkHttpClient = OkHttpClient(), val cert
         call(http, request(base, "/api/clipboards/$clipboardId/items/$itemId", token, "DELETE"))
     }
 
-    suspend fun createClipboard(base: String, token: String, name: String): Clipboard =
-        Json.clipboard(call(http, request(base, "/api/clipboards", token, "POST", JSONObject().put("name", name))))
+    suspend fun createClipboard(base: String, token: String, name: String, groupId: String? = null): Clipboard {
+        val o = JSONObject().put("name", name)
+        groupId?.let { o.put("groupId", it) }
+        return Json.clipboard(call(http, request(base, "/api/clipboards", token, "POST", o)))
+    }
 
     suspend fun renameClipboard(base: String, token: String, id: String, name: String): Clipboard =
         Json.clipboard(call(http, request(base, "/api/clipboards/$id", token, "PATCH", JSONObject().put("name", name))))

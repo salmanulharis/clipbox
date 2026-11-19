@@ -25,9 +25,31 @@ data class Clipboard(
     val createdAt: Long,
     val updatedAt: Long,
     val items: List<ClipItem>,
+    val groupId: String = Group.DEFAULT_ID,
 )
 
-/** A note stored on the server and visible to everyone connected to it. */
+/**
+ * A group on the server (API v3). Clipboards and shared notes belong to exactly one group; the
+ * server only sends this device the groups it can see. Older servers have no groups — everything
+ * then belongs to the implicit default group.
+ */
+data class Group(
+    val id: String,
+    val name: String,
+    /** "all" (every device) or "members" (invited devices only). */
+    val access: String,
+    val isDefault: Boolean,
+    val memberCount: Int = 0,
+) {
+    val membersOnly: Boolean get() = access == "members"
+
+    companion object {
+        const val DEFAULT_ID = "grp_everyone"
+        val DEFAULT = Group(DEFAULT_ID, "Everyone", "all", isDefault = true)
+    }
+}
+
+/** A note stored on the server and visible to the devices in its group. */
 data class SharedNote(
     val id: String,
     val title: String,
@@ -42,6 +64,7 @@ data class SharedNote(
     val updatedAt: Long,
     val updatedBy: String?,
     val updatedByName: String,
+    val groupId: String = Group.DEFAULT_ID,
 )
 
 /** A note stored only on this device, encrypted. Never sent to the server. */
@@ -74,6 +97,8 @@ data class Me(val deviceId: String?, val name: String?, val role: Role)
 data class Snapshot(
     val rev: Int,
     val boot: String,
+    /** Groups this device can see (always at least the default one). */
+    val groups: List<Group> = listOf(Group.DEFAULT),
     val clipboards: List<Clipboard>,
     val notes: List<SharedNote>,
     val me: Me?,
