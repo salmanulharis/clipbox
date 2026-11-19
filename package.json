@@ -1,0 +1,40 @@
+{
+  "name": "clipbox",
+  "version": "1.0.0",
+  "description": "Lightweight self-hosted clipboard sharing across desktop, mobile and tablet browsers, with live sync, QR connect and ngrok/Cloudflare tunnel support.",
+  "main": "server/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node --check server/index.js && node --check server/store.js && node --check server/auth.js && node --check server/tunnel.js && node --check server/network.js && node --check server/config.js && node --check public/app.js && node --check public/theme.js",
+    "test": "node --test test/api.test.mjs"
+  },
+  "keywords": [
+    "clipboard",
+    "clipboard-sharing",
+    "self-hosted",
+    "lan",
+    "qr-code",
+    "ngrok",
+    "cloudflare-tunnel",
+    "server-sent-events"
+  ],
+  "author": "Salmanul Haris",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/salmanulharis/clipbox.git"
+  },
+  "homepage": "https://github.com/salmanulharis/clipbox#readme",
+  "bugs": {
+    "url": "https://github.com/salmanulharis/clipbox/issues"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4"
+  },
+  "license": "MIT"
+}
