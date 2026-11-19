@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff" id="meta-theme">
+  <meta name="color-scheme" content="light dark">
+  <title>ClipBox</title>
+  <script src="/theme.js"></script>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <!-- Main application -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/icon.svg" alt="" width="22" height="22">
+        <span>ClipBox</span>
+      </div>
+      <span id="status" class="status" data-tip="Connecting…" role="status" aria-label="Connecting"></span>
+      <div class="spacer"></div>
+      <div class="menu-wrap">
+        <button id="btn-theme" class="icon-btn" data-tip="Theme" aria-label="Change theme" aria-haspopup="menu" aria-expanded="false"><i data-icon="palette"></i></button>
+        <div id="theme-menu" class="menu" role="menu" aria-label="Theme" hidden></div>
+      </div>
+      <button id="btn-scan" class="icon-btn" data-tip="Scan a QR code" aria-label="Scan a QR code"><i data-icon="scan"></i></button>
+      <button id="btn-connect" class="btn" data-tip="Open ClipBox on another device"><i data-icon="qr"></i><span class="hide-xs">Connect</span></button>
+      <button id="btn-logout" class="icon-btn" data-tip="Log out" aria-label="Log out" hidden><i data-icon="logout"></i></button>
+    </header>
+
+    <div class="layout">
+      <nav class="sidebar" aria-label="Clipboards">
+        <div class="side-head">
+          <span>Clipboards</span>
+          <button id="btn-new" class="icon-btn sm" data-tip="New clipboard" aria-label="New clipboard"><i data-icon="plus"></i></button>
+        </div>
+        <ul id="board-list" class="board-list"></ul>
+        <button id="btn-new-chip" class="chip add-chip" aria-label="New clipboard"><i data-icon="plus"></i></button>
+      </nav>
+
+      <main class="main">
+        <div class="board-head">
+          <h1 id="board-name" class="board-name" data-tip="Click to rename"></h1>
+          <span id="board-count" class="muted"></span>
+          <div class="spacer"></div>
+          <button id="btn-copy-all" class="btn primary" data-tip="Copy every text item in this clipboard"><i data-icon="copy"></i><span>Copy all</span></button>
+          <button id="btn-rename" class="icon-btn" data-tip="Rename clipboard" aria-label="Rename clipboard"><i data-icon="edit"></i></button>
+          <button id="btn-clear" class="icon-btn" data-tip="Clear all items" aria-label="Clear all items"><i data-icon="eraser"></i></button>
+          <button id="btn-delete" class="icon-btn danger" data-tip="Delete clipboard" aria-label="Delete clipboard"><i data-icon="trash"></i></button>
+        </div>
+
+        <form id="composer" class="composer" autocomplete="off">
+          <textarea id="input" rows="3" placeholder="Type or paste text…" aria-label="New clipboard item"></textarea>
+          <div class="composer-bar">
+            <button type="button" id="btn-paste" class="icon-btn sm" data-tip="Paste from your clipboard" aria-label="Paste from clipboard"><i data-icon="paste"></i></button>
+            <button type="button" id="btn-attach" class="icon-btn sm" data-tip="Add an image or file" aria-label="Add file"><i data-icon="attach"></i></button>
+            <input type="file" id="file-input" multiple hidden>
+            <span class="hint hide-touch">Ctrl+Enter to add · Ctrl+V anywhere to add instantly · drop files</span>
+            <div class="spacer"></div>
+            <button type="submit" class="btn primary" id="btn-add"><i data-icon="plus"></i><span>Add</span></button>
+          </div>
+        </form>
+
+        <ul id="items" class="items" aria-live="polite"></ul>
+        <div id="empty" class="empty" hidden>
+          <i data-icon="clipboard"></i>
+          <p>This clipboard is empty.</p>
+          <p class="muted">Type above, paste with Ctrl+V, or drop a file.</p>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Login -->
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-box">
+      <img src="/icon.svg" alt="" width="40" height="40">
+      <h1>ClipBox</h1>
+      <p id="login-msg" class="muted">Enter the password to continue.</p>
+      <div id="login-fields">
+        <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" required aria-label="Password">
+        <button type="submit" class="btn primary block">Unlock</button>
+      </div>
+      <p id="login-error" class="error" hidden></p>
+    </form>
+  </div>
+
+  <!-- Connect dialog -->
+  <dialog id="dlg-connect" class="dialog">
+    <div class="dlg-head">
+      <h2>Connect a device</h2>
+      <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
+    </div>
+    <div class="dlg-body">
+      <div id="connect-urls" class="seg" role="tablist"></div>
+      <div class="qr-wrap"><img id="connect-qr" alt="QR code" width="220" height="220"></div>
+      <div class="url-row">
+        <code id="connect-url"></code>
+        <button id="connect-copy" class="icon-btn sm" data-tip="Copy link" aria-label="Copy link"><i data-icon="copy"></i></button>
+      </div>
+      <p id="connect-note" class="muted small"></p>
+      <p id="connect-tunnel" class="muted small"></p>
+    </div>
+  </dialog>
+
+  <!-- Scan dialog -->
+  <dialog id="dlg-scan" class="dialog">
+    <div class="dlg-head">
+      <h2>Scan QR code</h2>
+      <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
+    </div>
+    <div class="dlg-body">
+      <div id="scan-view" class="scan-view">
+        <video id="scan-video" playsinline muted></video>
+        <div class="scan-frame"></div>
+      </div>
+      <p id="scan-msg" class="muted small center"></p>
+      <div id="scan-result" class="scan-result" hidden>
+        <code id="scan-text"></code>
+        <div class="row">
+          <button id="scan-open" class="btn primary"><i data-icon="link"></i><span>Open</span></button>
+          <button id="scan-add" class="btn"><i data-icon="plus"></i><span>Add to clipboard</span></button>
+          <button id="scan-copy" class="btn"><i data-icon="copy"></i><span>Copy</span></button>
+        </div>
+      </div>
+      <div class="row center">
+        <button id="scan-photo" class="btn"><i data-icon="image"></i><span>Scan from photo</span></button>
+        <button id="scan-again" class="btn" hidden><i data-icon="scan"></i><span>Scan again</span></button>
+      </div>
+      <input type="file" id="scan-file" accept="image/*" capture="environment" hidden>
+    </div>
+  </dialog>
+
+  <!-- Prompt / confirm dialog -->
+  <dialog id="dlg-prompt" class="dialog small">
+    <form id="prompt-form" method="dialog">
+      <div class="dlg-head"><h2 id="prompt-title"></h2></div>
+      <div class="dlg-body">
+        <p id="prompt-message" class="muted"></p>
+        <input id="prompt-input" type="text" maxlength="60" aria-label="Value">
+      </div>
+      <div class="dlg-foot">
+        <button type="button" class="btn" id="prompt-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="prompt-ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="drop" class="drop-overlay" hidden><div><i data-icon="attach"></i><p>Drop to add to clipboard</p></div></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
