@@ -376,3 +376,23 @@ test('groups keep clipboards and shared notes apart', async () => {
   await shot(page, '15-group-invite');
   await context.close();
 });
+
+test('a browser that joins with a group invitation opens that group', async () => {
+  const H = { 'X-ClipBox': '1', 'Content-Type': 'application/json' };
+  const name = `Invited ${Date.now() % 100000}`;
+  const g = await (await fetch(`${srv.base}/api/groups`, { method: 'POST', headers: H, body: JSON.stringify({ name }) })).json();
+  const c = await (await fetch(`${srv.base}/api/connect?group=${g.id}`)).json();
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  page.on('pageerror', (e) => { throw e; });
+  await page.goto(`${srv.base}/join?t=${encodeURIComponent(c.token)}`);
+  await page.locator('#app').waitFor({ state: 'visible' });
+  await page.locator('#group-name', { hasText: name }).waitFor();
+  await page.locator('.toast', { hasText: `You joined "${name}"` }).waitFor();
+  assert.equal(new URL(page.url()).search, '', 'the address bar is cleaned up');
+  // The choice is remembered: a reload stays in the group.
+  await page.reload();
+  await page.locator('#app').waitFor({ state: 'visible' });
+  await page.locator('#group-name', { hasText: name }).waitFor();
+  await context.close();
+});

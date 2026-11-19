@@ -480,9 +480,11 @@ route('GET', /^\/join$/, (req, res, m, url) => {
   const invite = auth.verifyPairToken(token);
   if (invite) {
     const device = deviceForSignIn(req, 'member');
-    if (invite.groupId && groupOf(invite.groupId)) store.addMember(invite.groupId, device.id);
+    const invitedTo = invite.groupId && groupOf(invite.groupId) ? invite.groupId : null;
+    if (invitedTo) store.addMember(invitedTo, device.id);
     return send(res, 302, '', {
-      Location: '/',
+      // Open the group this invitation was for.
+      Location: invitedTo ? `/?group=${encodeURIComponent(invitedTo)}` : '/',
       'Set-Cookie': [auth.sessionCookie(req, device.id), auth.deviceCookie(req, device.id)],
       'Cache-Control': 'no-store',
     });
