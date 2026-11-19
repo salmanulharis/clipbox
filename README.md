@@ -1,0 +1,300 @@
+# ClipBox
+
+[![CI](https://github.com/salmanulharis/clipbox/actions/workflows/ci.yml/badge.svg)](https://github.com/salmanulharis/clipbox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Node.js](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen)
+
+A lightweight, self-hosted clipboard you can share between your desktop, phone and tablet.
+Run it on one computer, open it in any browser on your network (or anywhere through a tunnel), and every device sees the same clipboards in real time.
+
+- **Multiple clipboards.** Create, rename, clear and delete them. Add, edit, copy and delete items.
+- **Text, images and files.** Press Ctrl+V anywhere on the page, drag & drop, or use the paste/attach buttons.
+- **One-click copy.** Copy a single item, or the whole clipboard with **Copy all**.
+- **Live sync.** Changes appear on every connected device almost instantly.
+- **QR connect.** Scan a code to open ClipBox on another device. Remote codes also sign the device in.
+- **Built-in QR scanner.** Uses the live camera, or a photo when the page isn't on HTTPS.
+- **LAN + public access.** Works on your local network and through ngrok or Cloudflare Tunnel, with no code changes.
+- **Themes.** System, Light, Dark, Midnight, Forest, Rose and Sand, remembered per device.
+- **Persistent.** Data is stored in a JSON file on the server and survives restarts.
+- **Secure by default.** Remote access always requires a password.
+- **Tiny.** Plain Node.js with two dependencies (`qrcode`, `jsqr`), no database and no build step.
+
+---
+
+## Requirements
+
+- [Node.js](https://nodejs.org) **18.17 or newer** (20+ recommended)
+- Optional: [ngrok](https://ngrok.com/download) or [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for public access
+
+## Installation
+
+```bash
+cd clipbox
+npm install
+cp .env.example .env      # Windows (cmd): copy .env.example .env
+npm start
+```
+
+The console prints every address ClipBox is reachable at, plus a QR code for your phone:
+
+```
+  ClipBox is running
+
+  This PC: http://localhost:3210
+  Network: http://192.168.1.20:3210  (Wi-Fi)
+  Auth:    LAN open, password required for remote access
+
+  Scan to open http://192.168.1.20:3210 on your phone:
+  ▄▄▄▄▄▄▄ ▄ ▄ ...
+```
+
+Open `http://localhost:3210` on this computer.
+
+---
+
+## Configuration (`.env`)
+
+Every setting is optional. Variables already set in the real environment take precedence over `.env`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST` | `0.0.0.0` | Interface to bind. `0.0.0.0` makes ClipBox reachable from your LAN; `127.0.0.1` restricts it to this machine and tunnels. |
+| `PORT` | `3210` | HTTP port. |
+| `DATA_DIR` | `./data` | Where clipboards (`db.json`), uploaded files and the session secret live. |
+| `AUTH_PASSWORD` | *(empty)* | Password for logging in. **Remote access is refused until this is set.** |
+| `AUTH_MODE` | `public` | `public`: LAN devices need no password, remote/tunnel visitors must log in. `all`: every device must log in. |
+| `SESSION_DAYS` | `30` | How long a login stays valid. |
+| `LOCAL_HOSTNAMES` | *(empty)* | Extra comma-separated host names treated as "local" (e.g. a name set up in your router's DNS). |
+| `TUNNEL` | `none` | `none`, `ngrok` or `cloudflare`. |
+| `TUNNEL_AUTOSTART` | `false` | `true` makes ClipBox launch the tunnel program itself. |
+| `PUBLIC_URL` | *(empty)* | Fixed public URL (named Cloudflare tunnel, reverse proxy, …). Always wins over auto-detection. |
+| `NGROK_BIN` | `ngrok` | Path to the ngrok executable. |
+| `NGROK_API` | `http://127.0.0.1:4040` | ngrok's local API, used to detect the public URL. |
+| `NGROK_DOMAIN` | *(empty)* | Your reserved/static ngrok domain (optional). |
+| `CLOUDFLARED_BIN` | `cloudflared` | Path to the cloudflared executable. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | *(empty)* | Token of a named tunnel. Without it a free quick tunnel is created. |
+| `MAX_TEXT_KB` | `1024` | Maximum size of a text item. |
+| `MAX_FILE_MB` | `25` | Maximum size of an uploaded image or file. |
+| `HTTPS_CERT` / `HTTPS_KEY` | *(empty)* | Certificate and key paths to serve HTTPS directly on the LAN (see [HTTPS on the LAN](#optional-https-on-the-lan)). |
+
+---
+
+## Local network access
+
+1. Keep `HOST=0.0.0.0` (the default) and start ClipBox.
+2. On your phone or tablet, connected to the **same Wi-Fi**, do one of these:
+   - scan the QR code printed in the terminal,
+   - click **Connect** in the app and scan the code on screen,
+   - or type the `Network:` address, e.g. `http://192.168.1.20:3210`.
+
+If another device can't connect:
+
+- **Windows firewall.** Allow Node.js on *Private* networks when Windows asks. If you missed the prompt, run this in an admin PowerShell:
+  ```powershell
+  New-NetFirewallRule -DisplayName "ClipBox" -Direction Inbound -Protocol TCP -LocalPort 3210 -Action Allow -Profile Private
+  ```
+  Also make sure your Wi-Fi network profile is set to *Private*.
+- **macOS.** Allow incoming connections for `node` under System Settings → Network → Firewall.
+- **Linux (ufw).** Run `sudo ufw allow 3210/tcp`.
+- **Wrong address.** The Connect dialog lists every network interface. Addresses marked *virtual* (WSL, Hyper-V, Docker) usually can't be reached from other devices.
+- **Guest network.** Guest networks and "AP/client isolation" block devices from reaching each other.
+
+---
+
+## Public access
+
+> ⚠️ Set `AUTH_PASSWORD` before going public. Without it, ClipBox refuses every request that arrives through a tunnel.
+
+### ngrok
+
+1. [Install ngrok](https://ngrok.com/download) and add your authtoken once:
+   ```bash
+   ngrok config add-authtoken <YOUR_TOKEN>
+   ```
+2. Configure `.env`:
+   ```ini
+   AUTH_PASSWORD=choose-a-strong-password
+   TUNNEL=ngrok
+   TUNNEL_AUTOSTART=true
+   # NGROK_DOMAIN=your-name.ngrok-free.app   # optional, free static domain
+   ```
+3. Run `npm start`. ClipBox launches ngrok, reads the public URL from ngrok's API, prints it, and shows it in the **Connect** dialog.
+
+Prefer to run ngrok yourself? Set `TUNNEL_AUTOSTART=false` and run `ngrok http 3210` in another terminal. ClipBox still detects the URL automatically.
+
+*The free ngrok plan shows a one-time "You are about to visit…" warning page. Click **Visit Site** and it won't appear again on that device.*
+
+### Cloudflare Tunnel
+
+**Quick tunnel (free, no account, random `*.trycloudflare.com` URL):**
+
+1. [Install cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
+2. Configure `.env`:
+   ```ini
+   AUTH_PASSWORD=choose-a-strong-password
+   TUNNEL=cloudflare
+   TUNNEL_AUTOSTART=true
+   ```
+3. Run `npm start`. The `trycloudflare.com` URL is detected automatically. It changes every time the tunnel restarts.
+
+**Named tunnel (your own domain, permanent URL):**
+
+1. In the Cloudflare dashboard go to **Zero Trust → Networks → Tunnels → Create tunnel**. Add a *public hostname* (e.g. `clips.example.com`) that points to `http://localhost:3210`, and copy the tunnel token.
+2. Configure `.env`:
+   ```ini
+   AUTH_PASSWORD=choose-a-strong-password
+   TUNNEL=cloudflare
+   TUNNEL_AUTOSTART=true
+   CLOUDFLARE_TUNNEL_TOKEN=eyJh...
+   PUBLIC_URL=https://clips.example.com
+   ```
+   You can also run `cloudflared` as a system service yourself. In that case leave `TUNNEL_AUTOSTART=false` and keep `PUBLIC_URL` set.
+
+### Any other proxy or tunnel
+
+Point it at `http://localhost:3210` and set `PUBLIC_URL` to its address so the Connect dialog can show it.
+
+---
+
+## Usage
+
+| Action | How |
+|---|---|
+| Add text | Type in the box and press **Add** or **Ctrl/⌘+Enter** |
+| Quick paste | Press **Ctrl/⌘+V** anywhere on the page (outside the text box). The content is added immediately. |
+| Paste button | Reads your device's clipboard directly. This needs HTTPS; over plain HTTP, long-press the box and choose *Paste*. |
+| Add image/file | Paste it, drag & drop it, or use the 📎 button |
+| Copy an item | The blue copy icon on each item |
+| Copy everything | **Copy all** copies every text item, joined by new lines |
+| Edit an item | ✏️ on the item. Ctrl+Enter saves, Esc cancels. |
+| New / switch clipboard | The sidebar on desktop, or the chips under the top bar on mobile |
+| Rename | Click the clipboard title or the ✏️ next to *Copy all* |
+| Clear / Delete clipboard | The eraser and trash icons next to *Copy all* (you'll be asked to confirm) |
+| Connect a device | **Connect** shows a QR code for each LAN or public address |
+| Scan a QR code | The scan icon in the top bar. You can open the link, add it to the clipboard, or copy it. |
+| Change theme | The palette icon in the top bar (each device remembers its own choice) |
+| Focus the input | Press `/` |
+
+The dot next to the logo shows the connection state: **green** = live, **amber** = connecting, **red** = offline (it reconnects automatically). When a device comes back from sleep it re-syncs automatically.
+
+### How QR sign-in works
+
+When a password is needed for an address (any public URL, or every URL with `AUTH_MODE=all`), the QR code includes a **sign-in token that is valid for 10 minutes**. Scanning it opens ClipBox already logged in, so you never have to type the password on your phone. After it expires, open **Connect** again to get a fresh code.
+
+---
+
+## Browser notes: HTTP vs HTTPS
+
+Browsers restrict some features to secure (HTTPS or `localhost`) pages:
+
+| Feature | Plain HTTP on the LAN | HTTPS (tunnel or local cert) |
+|---|---|---|
+| Copy text | ✅ (uses a fallback method) | ✅ |
+| Paste with Ctrl+V / long-press | ✅ | ✅ |
+| Paste button (read clipboard) | ❌ use Ctrl+V / long-press | ✅ |
+| Copy image to clipboard | ❌ downloads instead | ✅ |
+| Live camera QR scanner | ❌ use **Scan from photo** | ✅ |
+
+The ngrok and Cloudflare URLs are HTTPS, so every feature works there.
+
+### Optional: HTTPS on the LAN
+
+To get the full feature set on your local network too, create a certificate with [mkcert](https://github.com/FiloSottile/mkcert):
+
+```bash
+mkcert -install
+mkcert 192.168.1.20 localhost      # use your LAN IP
+```
+
+```ini
+HTTPS_CERT=./192.168.1.20+1.pem
+HTTPS_KEY=./192.168.1.20+1-key.pem
+```
+
+Other devices need to trust mkcert's root CA (see the mkcert docs). If they don't, they'll show a certificate warning that you can accept.
+
+---
+
+## Security model
+
+- **LAN vs remote.** A request counts as *local* only when **all** of these are true: it comes straight from a private/loopback IP, it carries no proxy headers (`X-Forwarded-For`, `CF-Connecting-IP`, …), and its `Host` is an IP address, `localhost`, your computer's name, `*.local`, or a name in `LOCAL_HOSTNAMES`. Everything else, including all tunnel traffic, counts as *remote*.
+- **Remote requests always need the password.** If `AUTH_PASSWORD` is empty, they are rejected outright.
+- **Sessions** are HMAC-signed, `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS). **Changing `AUTH_PASSWORD` signs out every device.** The signing secret lives in `DATA_DIR/secret.key`.
+- **Login** attempts are rate-limited (10 per 5 minutes per client).
+- **CSRF and DNS rebinding.** API writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
+- **Uploaded files.** Only common image types are shown inline. Everything else (including SVG and HTML) is served as a download in a sandbox.
+- **Shared LAN.** On a network you share with others (office, dorm), use `AUTH_MODE=all`.
+
+## Data & backups
+
+```
+data/
+├── db.json        # all clipboards and text items
+├── db.json.bak    # previous version (used automatically if db.json is damaged)
+├── files/         # uploaded images and files
+└── secret.key     # session signing key
+```
+
+Writes are atomic (temp file → rename) and flushed on shutdown. To back up, copy the `data/` folder. To reset everything, stop the server and delete it.
+
+## Running in the background
+
+- **pm2 (any OS):** `npm i -g pm2 && pm2 start server/index.js --name clipbox && pm2 save`
+- **Linux systemd:** create a service with `WorkingDirectory=/path/to/clipbox` and `ExecStart=/usr/bin/node server/index.js`.
+- **Windows:** use pm2, or a Task Scheduler task "At log on" that runs `node server\index.js` in the project folder.
+
+## Project structure
+
+```
+server/
+  index.js     HTTP server, routing, SSE sync, uploads, QR codes
+  store.js     JSON persistence and clipboard operations
+  auth.js      local/remote detection, sessions, sign-in tokens
+  tunnel.js    ngrok / cloudflared launch and URL discovery
+  network.js   LAN address detection
+  config.js    .env loading and defaults
+public/
+  index.html, app.js, style.css   the whole UI (vanilla JS, no build)
+  theme.js                        applies the saved theme before first paint
+test/
+  api.test.mjs                    end-to-end API tests (node:test)
+```
+
+## Development
+
+```bash
+npm run dev     # restart automatically on server changes
+npm run check   # syntax-check all source files
+npm test        # start a throwaway server and run the API test suite
+```
+
+CI runs the checks and tests on Linux and Windows with Node 20, 22 and 24.
+
+### API (for scripting)
+
+All write requests need the header `X-ClipBox: 1`. Remote requests also need the session cookie from `POST /api/login`.
+
+```
+GET    /api/state                              all clipboards
+POST   /api/clipboards                {name}   create
+PATCH  /api/clipboards/:id            {name}   rename
+POST   /api/clipboards/:id/clear               clear
+DELETE /api/clipboards/:id                     delete
+POST   /api/clipboards/:id/items      {text}   add text
+PATCH  /api/clipboards/:id/items/:itemId {text} edit
+DELETE /api/clipboards/:id/items/:itemId       delete item
+POST   /api/clipboards/:id/files   (raw body, Content-Type, X-Filename)  upload
+GET    /files/:itemId[?download]               fetch a file
+GET    /api/events                             live updates (Server-Sent Events)
+```
+
+Example: send text from a terminal on your LAN:
+
+```bash
+ID=$(curl -s localhost:3210/api/state | node -pe "JSON.parse(require('fs').readFileSync(0)).clipboards[0].id")
+curl -s -X POST localhost:3210/api/clipboards/$ID/items -H "X-ClipBox: 1" -H "Content-Type: application/json" -d '{"text":"hello from the terminal"}'
+```
+
+## License
+
+MIT
