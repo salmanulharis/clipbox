@@ -38,6 +38,7 @@ const Notes = (() => {
   const canEditShared = (n) => canWriteShared() && (!n || !n.locked || me().role === 'host' || n.authorId === me().deviceId);
   const canLock = (n) => canWriteShared() && n && (me().role === 'host' || n.authorId === me().deviceId);
   const serverName = () => state.server?.serverName || 'this server';
+  const audience = () => groupAudience(); // e.g. 'members of "Family"' (app.js)
 
   const parseTags = (s) => s.split(/[,\n]/).map((t) => t.trim().replace(/^#+/, '')).filter(Boolean);
   const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
@@ -47,7 +48,7 @@ const Notes = (() => {
 
   function sectionNotes(section = N.section) {
     if (section === 'private') return N.priv;
-    if (section === 'shared') return state.notes || [];
+    if (section === 'shared') return (state.notes || []).filter((n) => n.groupId === state.groupId);
     return N.trash;
   }
 
@@ -105,7 +106,7 @@ const Notes = (() => {
   function render() {
     if (!N.ready) return;
     el('count-private').textContent = N.locked ? (N.lockCounts?.active || '') : N.priv.length || '';
-    el('count-shared').textContent = (state.notes || []).length || '';
+    el('count-shared').textContent = sectionNotes('shared').length || '';
     el('count-trash').textContent = N.locked ? (N.lockCounts?.trash || '') : N.trash.length || '';
     document.querySelectorAll('.section-btn').forEach((b) => {
       const on = b.dataset.section === N.section;
@@ -158,8 +159,8 @@ const Notes = (() => {
         b.append(w);
       }
     } else if (N.section === 'shared') {
-      b.innerHTML = `${icon('users')}<div class="banner-text"><strong>Shared</strong> <span>— visible to everyone connected to <span class="srv"></span></span>${isViewer() ? ' <span class="badge">View only</span>' : ''}</div>`;
-      b.querySelector('.srv').textContent = serverName();
+      b.innerHTML = `${icon('users')}<div class="banner-text"><strong>Shared</strong> <span>— visible to <span class="srv"></span></span>${isViewer() ? ' <span class="badge">View only</span>' : ''}</div>`;
+      b.querySelector('.srv').textContent = audience();
     } else {
       b.innerHTML = `${icon('trash')}<div class="banner-text"><strong>Trash</strong> <span>— deleted private notes are kept for 30 days</span></div>
         <div class="banner-actions"><button class="btn sm" data-act="empty-trash" ${N.trash.length ? '' : 'disabled'}>Empty trash</button></div>`;
@@ -215,7 +216,7 @@ const Notes = (() => {
         : N.section === 'private'
           ? ['No private notes yet', 'They are stored only in this browser and never sent to the server.']
           : N.section === 'shared'
-            ? ['No shared notes yet', canWriteShared() ? `Shared notes are visible to everyone connected to ${serverName()}.` : 'Notes shared by the group will appear here.']
+            ? ['No shared notes yet', canWriteShared() ? `Shared notes here are visible to ${audience()}.` : 'Notes shared by the group will appear here.']
             : ['Trash is empty', 'Deleted private notes stay here for 30 days.'];
       el('notes-empty-title').textContent = t;
       el('notes-empty-sub').textContent = sub;
@@ -399,7 +400,7 @@ const Notes = (() => {
     el('editor-delete').hidden = readonly;
 
     const meta = el('editor-meta');
-    if (!n) meta.textContent = shared ? `Will be shared with everyone connected to ${serverName()}.` : 'Saved automatically in this browser.';
+    if (!n) meta.textContent = shared ? `Will be shared with ${audience()}.` : 'Saved automatically in this browser.';
     else if (shared) meta.textContent = `Created by ${n.authorName} ${timeAgo(n.createdAt)} · last edited by ${n.updatedByName} ${timeAgo(n.updatedAt)}`;
     else meta.textContent = `Created ${new Date(n.createdAt).toLocaleString()} · edited ${timeAgo(n.updatedAt)}`;
   }
@@ -476,7 +477,7 @@ const Notes = (() => {
     try {
       const n = ed.id
         ? await api('PATCH', `/api/notes/${ed.id}`, { ...f, baseVersion: ed.version })
-        : await api('POST', '/api/notes', f);
+        : await api('POST', '/api/notes', { ...f, groupId: state.groupId });
       ed.id = n.id;
       ed.version = n.version;
       upsertShared(n);
@@ -596,12 +597,12 @@ const Notes = (() => {
     if (ed.scope === 'private') {
       const yes = await confirmDialog({
         title: 'Share this note?',
-        message: `A copy will be visible to everyone connected to ${serverName()}. Your private note stays private.`,
+        message: `A copy will be visible to ${audience()}. Your private note stays private.`,
         ok: 'Share',
       });
       if (!yes) return;
       await ensureSaved();
-      const n = await attempt(() => api('POST', '/api/notes', f));
+      const n = await attempt(() => api('POST', '/api/notes', { ...f, groupId: state.groupId }));
       if (n) {
         upsertShared(n);
         toast('Shared a copy with everyone', 'ok', 5000, { label: 'View', run: () => goTo('shared', n.id) });
@@ -828,7 +829,7 @@ const Notes = (() => {
     if (!title && !body.trim()) return null;
     if (scope === 'shared') {
       if (isViewer()) { toast('This device is view-only.', 'error'); return null; }
-      const n = await attempt(() => api('POST', '/api/notes', { title, body, tags }));
+      const n = await attempt(() => api('POST', '/api/notes', { title, body, tags, groupId: state.groupId }));
       if (!n) return null;
       upsertShared(n);
       toast('Saved as a shared note', 'ok', 5000, { label: 'View', run: () => goTo('shared', n.id) });

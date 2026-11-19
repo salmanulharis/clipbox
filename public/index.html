@@ -28,6 +28,10 @@
         <button id="tab-clipboards" class="vs-btn active" data-view="clipboards" aria-label="Clipboards"><i data-icon="clipboard"></i><span>Clipboards</span></button>
         <button id="tab-notes" class="vs-btn" data-view="notes" aria-label="Notes"><i data-icon="note"></i><span>Notes</span></button>
       </nav>
+      <div class="menu-wrap" id="group-wrap" hidden>
+        <button id="btn-group" class="group-btn" aria-haspopup="menu" aria-expanded="false" data-tip="Switch group"><i data-icon="users"></i><span id="group-name">Everyone</span><i data-icon="chevron"></i></button>
+        <div id="group-menu" class="menu" role="menu" aria-label="Groups" hidden></div>
+      </div>
       <div class="spacer"></div>
       <div class="menu-wrap">
         <button id="btn-theme" class="icon-btn" data-tip="Theme" aria-label="Change theme" aria-haspopup="menu" aria-expanded="false"><i data-icon="palette"></i></button>
@@ -174,6 +178,10 @@
       <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
     </div>
     <div class="dlg-body">
+      <div id="connect-group-row" class="connect-group" hidden>
+        <label for="connect-group">Add the device to</label>
+        <select id="connect-group" class="select-input"></select>
+      </div>
       <div id="connect-urls" class="seg" role="tablist"></div>
       <div class="qr-wrap"><img id="connect-qr" alt="QR code" width="220" height="220"></div>
       <div class="url-row">
@@ -181,6 +189,7 @@
         <button id="connect-copy" class="icon-btn sm" data-tip="Copy link" aria-label="Copy link"><i data-icon="copy"></i></button>
       </div>
       <p id="connect-note" class="muted small"></p>
+      <p id="connect-group-note" class="muted small"></p>
       <p id="connect-tunnel" class="muted small"></p>
       <div class="connect-foot">
         <span id="connect-me" class="muted small"></span>
@@ -199,6 +208,22 @@
       <p class="muted small devices-intro">Everything that has opened ClipBox. <strong>Viewers</strong> can only read; <strong>revoking</strong> signs a device out immediately.</p>
       <ul id="device-list" class="device-list"></ul>
       <p id="devices-note" class="muted small" hidden></p>
+    </div>
+  </dialog>
+
+  <!-- Groups dialog (host only) -->
+  <dialog id="dlg-groups" class="dialog wide">
+    <div class="dlg-head">
+      <h2>Groups</h2>
+      <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
+    </div>
+    <div class="dlg-body">
+      <p class="muted small devices-intro">Groups keep clipboards and shared notes apart, for example <em>Family</em> and <em>Work</em>. A device only sees the groups it belongs to; <strong>Everyone</strong> is visible to all devices. Private notes are never part of a group.</p>
+      <ul id="group-list" class="group-list"></ul>
+      <form id="group-create" class="group-create" autocomplete="off">
+        <input id="group-new-name" class="text-input" maxlength="60" placeholder="New group, e.g. Family" aria-label="New group name">
+        <button type="submit" class="btn primary"><i data-icon="plus"></i><span>Create</span></button>
+      </form>
     </div>
   </dialog>
 

@@ -321,3 +321,58 @@ test('encrypted backups use the shared .cbx format (web ↔ Android)', async () 
   await fresh.page.locator('#notes-list .note-title', { hasText: 'Interop note' }).waitFor();
   await fresh.context.close();
 });
+
+// ── groups ──
+test('groups keep clipboards and shared notes apart', async () => {
+  const { context, page } = await openApp();
+  const family = `Family ${Date.now() % 100000}`;
+  // The group switcher is available to the host (this browser runs on the server machine).
+  await page.locator('#group-wrap').waitFor({ state: 'visible' });
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: 'Manage groups' }).click();
+  await page.locator('#dlg-groups[open]').waitFor();
+  await page.fill('#group-new-name', family);
+  await page.click('#group-create button[type="submit"]');
+  await page.locator('#group-list .device-name', { hasText: family }).waitFor();
+  await shot(page, '13-groups-dialog');
+  await page.click('#dlg-groups [data-close]');
+
+  // Switch to the new group: it has its own empty General clipboard.
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: family }).click();
+  await page.locator('#group-name', { hasText: family }).waitFor();
+  const inFamily = `family-only-${Date.now()}`;
+  await page.fill('#input', inFamily);
+  await page.click('#btn-add');
+  await page.locator('.item .item-text', { hasText: inFamily }).waitFor();
+  await shot(page, '14-group-switcher');
+
+  // A shared note created here belongs to the group.
+  await page.click('#tab-notes');
+  await page.click('.section-btn[data-section="shared"]');
+  await page.locator('#section-banner', { hasText: `members of "${family}"` }).waitFor();
+  const noteTitle = `Family note ${Date.now()}`;
+  await newNote(page, noteTitle, 'only for the family');
+  await back(page);
+
+  // Back in Everyone, neither is shown.
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: 'Everyone' }).click();
+  assert.equal(await page.locator('#notes-list .note-title', { hasText: noteTitle }).count(), 0);
+  await page.click('#tab-clipboards');
+  assert.equal(await page.locator('.item .item-text', { hasText: inFamily }).count(), 0);
+
+  // The server stored both in the group.
+  const state = await (await fetch(`${srv.base}/api/state`)).json();
+  const g = state.groups.find((x) => x.name === family);
+  assert.equal(state.notes.find((n) => n.title === noteTitle).groupId, g.id);
+  assert.ok(state.clipboards.find((c) => c.groupId === g.id).items.some((i) => i.text === inFamily));
+
+  // Inviting to the group: the QR carries a sign-in token even on the LAN.
+  await page.click('#btn-connect');
+  await page.locator('#dlg-connect[open]').waitFor();
+  await page.selectOption('#connect-group', g.id);
+  await page.locator('#connect-group-note', { hasText: family }).waitFor();
+  await shot(page, '15-group-invite');
+  await context.close();
+});

@@ -73,8 +73,16 @@ const state = {
   loaded: false,
   notes: [],
   view: 'clipboards',
+  groups: [],
+  groupId: store.get('clipbox.group'),
 };
-const active = () => state.clipboards.find((c) => c.id === state.activeId) || state.clipboards[0] || null;
+/** Clipboards of the group currently shown. */
+const groupClipboards = () => state.clipboards.filter((c) => c.groupId === state.groupId);
+const currentGroup = () => state.groups.find((g) => g.id === state.groupId) || null;
+const active = () => {
+  const list = groupClipboards();
+  return list.find((c) => c.id === state.activeId) || list[0] || null;
+};
 
 // ── toasts ───────────────────────────────────────────────────
 function toast(message, kind = 'ok', ms = 2200, action = null) {
@@ -228,13 +236,14 @@ const itemEls = new Map(); // id -> { key, el }
 function render() {
   const cb = active();
   if (cb && cb.id !== state.activeId) state.activeId = cb.id;
+  renderGroupSwitcher();
   renderBoards();
   renderMain(cb);
 }
 
 function renderBoards() {
   const list = $('#board-list');
-  list.replaceChildren(...state.clipboards.map((c) => {
+  list.replaceChildren(...groupClipboards().map((c) => {
     const li = document.createElement('li');
     const b = document.createElement('button');
     b.className = `board${c.id === state.activeId ? ' active' : ''}`;
@@ -449,6 +458,8 @@ function autosize(ta) {
 function applySnapshot(data) {
   state.clipboards = data.clipboards;
   state.notes = data.notes || [];
+  state.groups = data.groups || [];
+  ensureGroup();
   state.rev = data.rev;
   state.boot = data.boot;
   render();
@@ -480,6 +491,7 @@ function applyEvent(ev) {
   if (ev.boot !== state.boot || ev.rev > state.rev + 1) return loadState(); // restart or missed events
   if (ev.rev <= state.rev) return; // duplicate
   state.rev = ev.rev;
+  if (ev.type === 'groups') return loadState(); // groups or membership changed: reload what we may see
   if (ev.type === 'clipboard') upsertClipboard(ev.clipboard, ev.order);
   else if (ev.type === 'remove') reorder(ev.order);
   else if (ev.type === 'note') {
@@ -648,7 +660,7 @@ async function deleteItem(id) {
 async function newClipboard() {
   const name = await ask({ title: 'New clipboard', placeholder: 'e.g. Work, Links, Phone', ok: 'Create' });
   if (!name) return;
-  const cb = await attempt(() => api('POST', '/api/clipboards', { name }));
+  const cb = await attempt(() => api('POST', '/api/clipboards', { name, groupId: state.groupId }));
   if (cb) {
     upsertClipboard(cb);
     setActive(cb.id);
@@ -679,11 +691,11 @@ async function deleteClipboard() {
   if (!cb) return;
   const yes = await confirmDialog({ title: `Delete "${cb.name}"?`, message: 'The clipboard and all its items will be permanently deleted on every device.', ok: 'Delete', danger: true });
   if (!yes) return;
-  const idx = state.clipboards.indexOf(cb);
+  const idx = groupClipboards().indexOf(cb);
   const ok = await attempt(() => api('DELETE', `/api/clipboards/${cb.id}`), 'Clipboard deleted');
   if (ok) {
     state.clipboards = state.clipboards.filter((c) => c.id !== cb.id);
-    const next = state.clipboards[Math.max(0, idx - 1)];
+    const next = groupClipboards()[Math.max(0, idx - 1)];
     if (next) setActive(next.id); else loadState().catch(() => {});
   }
 }
@@ -856,7 +868,7 @@ function saveAsNote({ title, body }) {
   sharedOpt.classList.toggle('disabled', !canShare);
   sharedOpt.querySelector('input').disabled = !canShare;
   $('#save-shared-hint').textContent = canShare
-    ? `Visible to everyone connected to ${state.server?.serverName || 'this server'}.`
+    ? `Visible to ${groupAudience()}.`
     : isViewer() ? 'This device is view-only.' : 'Not available while offline.';
   const locked = PrivateStore.lockState() === 'locked';
   $('#save-private-hint').textContent = locked
@@ -892,19 +904,34 @@ function saveAsNote({ title, body }) {
 // ── connect (QR) dialog ──────────────────────────────────────
 const connect = { urls: [], selected: 0 };
 
-async function openConnect() {
+async function openConnect(groupId = state.groupId) {
   const dlg = $('#dlg-connect');
   openDialog(dlg);
   $('#connect-urls').replaceChildren();
   $('#connect-url').textContent = 'Loading…';
   $('#connect-qr').removeAttribute('src');
-  const data = await attempt(() => api('GET', '/api/connect'));
+  // Invitations: hosts can invite to any group, others only to groups open to everyone.
+  const invitable = state.groups.filter((g) => state.me?.role === 'host' || g.access === 'all');
+  if (!invitable.some((g) => g.id === groupId)) groupId = invitable[0]?.id;
+  const sel = $('#connect-group');
+  $('#connect-group-row').hidden = invitable.length < 2;
+  sel.replaceChildren(...invitable.map((g) => {
+    const o = document.createElement('option');
+    o.value = g.id;
+    o.textContent = g.access === 'all' ? `${g.name} (everyone)` : g.name;
+    o.selected = g.id === groupId;
+    return o;
+  }));
+  sel.onchange = () => openConnect(sel.value);
+  const data = await attempt(() => api('GET', `/api/connect${groupId ? `?group=${encodeURIComponent(groupId)}` : ''}`));
   if (!data) return dlg.close();
+  const invite = data.group && !data.group.isDefault && data.group.id !== 'grp_everyone';
+  $('#connect-group-note').textContent = invite ? `Scanning this code also adds the device to the "${data.group.name}" group.` : '';
   const urls = data.urls;
   const here = location.origin;
   const isLoopback = /^(localhost|127\.|\[::1\])/.test(location.hostname);
   if (!isLoopback && !urls.some((u) => u.url === here)) {
-    const needsToken = state.session?.required && data.token;
+    const needsToken = (state.session?.required || invite) && data.token;
     const frag = data.fragment || '';
     urls.push({ kind: 'current', label: 'This address', url: here, link: needsToken ? `${here}/join?t=${encodeURIComponent(data.token)}${frag}` : `${here}/${frag}` });
   }
@@ -1333,6 +1360,165 @@ function setupThemeMenu() {
   applyTheme(store.get('clipbox.theme') || 'system');
 }
 
+// ── groups ───────────────────────────────────────────────────
+/** Who sees shared things in the current group, in words. */
+function groupAudience() {
+  const g = currentGroup();
+  const srv = state.server?.serverName || 'this server';
+  if (!g || g.isDefault) return `everyone connected to ${srv}`;
+  return g.access === 'all' ? `everyone in "${g.name}"` : `members of "${g.name}"`;
+}
+
+function ensureGroup() {
+  if (!state.groups.some((g) => g.id === state.groupId)) {
+    state.groupId = (state.groups.find((g) => g.isDefault) || state.groups[0])?.id || null;
+  }
+}
+
+function setGroup(id) {
+  if (id === state.groupId) return;
+  if (state.editing) cancelEdit();
+  state.groupId = id;
+  store.set('clipbox.group', id);
+  render();
+  if (typeof Notes !== 'undefined') Notes.onShared(null);
+  toast(`Switched to ${currentGroup()?.name || 'group'}`);
+}
+
+function closeGroupMenu() {
+  $('#group-menu').hidden = true;
+  $('#btn-group').setAttribute('aria-expanded', 'false');
+}
+
+function renderGroupSwitcher() {
+  const host = state.me?.role === 'host';
+  $('#group-wrap').hidden = !(state.groups.length > 1 || host);
+  $('#group-name').textContent = currentGroup()?.name || 'Everyone';
+  const items = state.groups.map((g) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `menu-item${g.id === state.groupId ? ' active' : ''}`;
+    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(g.id === state.groupId));
+    b.innerHTML = `${icon(g.access === 'all' ? 'users' : 'lock')}<span class="menu-label"></span>${icon('check')}`;
+    b.querySelector('.menu-label').textContent = g.name;
+    b.title = g.access === 'all' ? 'Visible to every device' : 'Only invited devices';
+    b.addEventListener('click', () => { closeGroupMenu(); setGroup(g.id); });
+    return b;
+  });
+  if (host) {
+    const sep = document.createElement('div');
+    sep.className = 'menu-sep';
+    const m = document.createElement('button');
+    m.type = 'button';
+    m.className = 'menu-item';
+    m.innerHTML = `${icon('settings')}<span class="menu-label">Manage groups…</span>`;
+    m.addEventListener('click', () => { closeGroupMenu(); openGroups(); });
+    items.push(sep, m);
+  }
+  $('#group-menu').replaceChildren(...items);
+}
+
+async function openGroups() {
+  openDialog($('#dlg-groups'));
+  await renderGroups();
+}
+
+async function renderGroups() {
+  const devs = await attempt(() => api('GET', '/api/devices'));
+  if (!devs) return;
+  const devices = devs.devices.filter((d) => !d.revoked);
+  $('#group-list').replaceChildren(...state.groups.map((g) => buildGroupRow(g, devices)));
+}
+
+async function patchGroup(g, body, okMsg) {
+  const r = await attempt(() => api('PATCH', `/api/groups/${g.id}`, body), okMsg);
+  if (r) {
+    await loadState();
+    await renderGroups();
+  }
+}
+
+function buildGroupRow(g, devices) {
+  const li = document.createElement('li');
+  li.className = 'group-row';
+  li.innerHTML = `<div class="group-head">${icon(g.access === 'all' ? 'users' : 'lock')}
+      <div class="group-main"><button type="button" class="device-name"></button><div class="device-meta"></div></div>
+      <select class="role-select" aria-label="Who can see this group">
+        <option value="all">Everyone</option><option value="members">Invited only</option>
+      </select>
+      <div class="row-actions"></div></div>`;
+  const name = li.querySelector('.device-name');
+  name.textContent = g.name;
+  name.title = 'Rename';
+  name.addEventListener('click', async () => {
+    const n = await ask({ title: 'Rename group', value: g.name, ok: 'Rename' });
+    if (n && n !== g.name) patchGroup(g, { name: n }, 'Group renamed');
+  });
+  const clips = state.clipboards.filter((c) => c.groupId === g.id).length;
+  const notes = (state.notes || []).filter((n) => n.groupId === g.id).length;
+  li.querySelector('.device-meta').textContent =
+    `${g.access === 'all' ? 'Visible to every device' : `${(g.members || []).length} member${(g.members || []).length === 1 ? '' : 's'} + host`} · ${clips} clipboard${clips === 1 ? '' : 's'} · ${notes} shared note${notes === 1 ? '' : 's'}`;
+
+  const sel = li.querySelector('.role-select');
+  sel.value = g.access;
+  sel.disabled = g.isDefault;
+  sel.title = g.isDefault ? 'Everyone is always visible to every device' : '';
+  sel.addEventListener('change', () => patchGroup(g, { access: sel.value }, sel.value === 'all' ? 'Now visible to every device' : 'Now invite-only'));
+
+  const actions = li.querySelector('.row-actions');
+  const btn = (ic, tip, cls, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `icon-btn sm ${cls}`;
+    b.dataset.tip = tip;
+    b.setAttribute('aria-label', tip);
+    b.innerHTML = icon(ic);
+    b.addEventListener('click', fn);
+    actions.append(b);
+  };
+  btn('qr', 'Invite a device (QR code)', '', () => { $('#dlg-groups').close(); openConnect(g.id); });
+  if (!g.isDefault) {
+    btn('trash', 'Delete group', 'danger', async () => {
+      const yes = await confirmDialog({
+        title: `Delete "${g.name}"?`,
+        message: `Its ${clips} clipboard${clips === 1 ? '' : 's'} and ${notes} shared note${notes === 1 ? '' : 's'} are deleted for everyone. Private notes are not affected.`,
+        ok: 'Delete group',
+        danger: true,
+      });
+      if (yes && (await attempt(() => api('DELETE', `/api/groups/${g.id}`), 'Group deleted'))) {
+        await loadState();
+        await renderGroups();
+      }
+    });
+  }
+
+  if (g.access === 'members') {
+    const box = document.createElement('div');
+    box.className = 'member-list';
+    const others = devices.filter((d) => d.role !== 'host' || (g.members || []).includes(d.id));
+    if (!others.length) box.innerHTML = '<p class="muted small">No other devices yet. Use the QR button to invite one.</p>';
+    for (const d of others) {
+      const label = document.createElement('label');
+      label.className = 'member';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = (g.members || []).includes(d.id);
+      cb.addEventListener('change', () => {
+        const next = new Set(g.members || []);
+        if (cb.checked) next.add(d.id); else next.delete(d.id);
+        patchGroup(g, { members: [...next] }, cb.checked ? `${d.name} added` : `${d.name} removed`);
+      });
+      const span = document.createElement('span');
+      span.textContent = `${d.name}${d.current ? ' (this device)' : ''}`;
+      label.append(cb, span);
+      box.append(label);
+    }
+    li.append(box);
+  }
+  return li;
+}
+
 // ── views ────────────────────────────────────────────────────
 function setView(view) {
   state.view = view === 'notes' ? 'notes' : 'clipboards';
@@ -1391,6 +1577,26 @@ function wire() {
   $('#btn-connect').addEventListener('click', openConnect);
   $('#btn-scan').addEventListener('click', openScanner);
   $('#btn-devices').addEventListener('click', openDevices);
+  $('#btn-group').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#group-menu');
+    menu.hidden = !menu.hidden;
+    $('#btn-group').setAttribute('aria-expanded', String(!menu.hidden));
+  });
+  document.addEventListener('click', (e) => {
+    if (!$('#group-menu').hidden && !$('#group-menu').contains(e.target)) closeGroupMenu();
+  });
+  $('#group-create').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('#group-new-name').value.trim();
+    if (!name) return $('#group-new-name').focus();
+    const g = await attempt(() => api('POST', '/api/groups', { name, access: 'members' }), `Group "${name}" created`);
+    if (g) {
+      $('#group-new-name').value = '';
+      await loadState();
+      await renderGroups();
+    }
+  });
   $('#btn-logout').addEventListener('click', logout);
 
   // Paste anywhere: files are uploaded; text outside an input is added instantly.
