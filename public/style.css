@@ -373,6 +373,49 @@ a { color: var(--accent); }
 .toast.ok .ic { color: var(--toast-ok); }
 .toast.error .ic { color: var(--toast-err); }
 
+/* ── roles & devices ─────────────────────────────────────── */
+.badge {
+  position: relative; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; margin-left: 6px;
+  border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--bg-hover); color: var(--muted); white-space: nowrap;
+}
+body.viewer .composer,
+body.viewer #btn-new, body.viewer #btn-new-chip,
+body.viewer #btn-rename, body.viewer #btn-clear, body.viewer #btn-delete,
+body.viewer .item-actions [data-act="edit"], body.viewer .item-actions [data-act="delete"] { display: none !important; }
+body.viewer .board-name { pointer-events: none; }
+
+.btn.sm { height: 30px; padding: 0 10px; font-size: 13px; }
+.btn.sm .ic { width: 16px; height: 16px; }
+.connect-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.connect-foot:has(#connect-me:empty):has(#btn-devices[hidden]) { display: none; }
+
+.dialog.wide { width: min(560px, calc(100vw - 32px)); }
+.devices-intro { margin: 0 0 10px; }
+.device-list { list-style: none; margin: 0; padding: 0; max-height: min(60dvh, 520px); overflow-y: auto; }
+.device-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border); }
+.device-row:last-child { border-bottom: 0; }
+.device-row > .ic { color: var(--muted); }
+.device-row.revoked { opacity: .6; }
+.device-main { flex: 1; min-width: 0; }
+.device-name {
+  display: block; max-width: 100%; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.device-name:hover { color: var(--accent); }
+.device-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-meta .you { color: var(--accent); font-weight: 500; }
+.role-select {
+  height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer;
+}
+.role-select:disabled { opacity: .5; cursor: default; }
+.device-row .row-actions { display: flex; gap: 2px; }
+@media (max-width: 480px) {
+  .device-row { flex-wrap: wrap; }
+  .device-main { flex-basis: calc(100% - 34px); }
+  .role-select { margin-left: 28px; }
+  .device-row .row-actions { margin-left: auto; }
+}
+
 /* ── theme menu ──────────────────────────────────────────── */
 .menu-wrap { position: relative; }
 .menu {

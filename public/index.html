@@ -21,6 +21,7 @@
         <span>ClipBox</span>
       </div>
       <span id="status" class="status" data-tip="Connecting…" role="status" aria-label="Connecting"></span>
+      <span id="role-badge" class="badge" data-tip="The host made this device read-only" hidden>View only</span>
       <div class="spacer"></div>
       <div class="menu-wrap">
         <button id="btn-theme" class="icon-btn" data-tip="Theme" aria-label="Change theme" aria-haspopup="menu" aria-expanded="false"><i data-icon="palette"></i></button>
@@ -103,6 +104,23 @@
       </div>
       <p id="connect-note" class="muted small"></p>
       <p id="connect-tunnel" class="muted small"></p>
+      <div class="connect-foot">
+        <span id="connect-me" class="muted small"></span>
+        <button id="btn-devices" class="btn sm" hidden><i data-icon="devices"></i><span>Manage devices</span></button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Devices dialog (host only) -->
+  <dialog id="dlg-devices" class="dialog wide">
+    <div class="dlg-head">
+      <h2>Devices</h2>
+      <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
+    </div>
+    <div class="dlg-body">
+      <p class="muted small devices-intro">Everything that has opened ClipBox. <strong>Viewers</strong> can only read; <strong>revoking</strong> signs a device out immediately.</p>
+      <ul id="device-list" class="device-list"></ul>
+      <p id="devices-note" class="muted small" hidden></p>
     </div>
   </dialog>
 
