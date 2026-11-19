@@ -631,6 +631,7 @@ function createServer() {
 }
 
 async function printQr(url) {
+  if (!process.stdout.isTTY) return; // e.g. running in the background with output in a log file
   try {
     console.log(await QRCode.toString(url, { type: 'terminal', small: true }));
   } catch { /* terminal QR is a nicety */ }
@@ -663,7 +664,7 @@ server.listen(config.port, config.host, async () => {
   console.log(`  Data:    ${config.dataDir}`);
   console.log(`  Auth:    ${config.authMode === 'all' ? 'password required for every device' : 'LAN open, password required for remote access'}${auth.passwordSet ? '' : ' (no AUTH_PASSWORD set)'}`);
   const primary = locals.find((u) => !u.virtual) || locals[0];
-  if (primary && config.authMode !== 'all') {
+  if (primary && config.authMode !== 'all' && process.stdout.isTTY) {
     console.log(`\n  Scan to open ${primary.url} on your phone:`);
     await printQr(primary.url);
   }

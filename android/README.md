@@ -57,6 +57,25 @@ ANDROID_KEY_PASSWORD=…
 ./gradlew :app:assembleRelease
 ```
 
+The release build is shrunk with R8 (about 2.5 MB, against 17 MB for debug) and installs as a separate app from the debug build (`…clipbox` vs `…clipbox.debug`).
+
+## Releases
+
+Pushing a tag like `v1.4.0` runs `.github/workflows/release.yml`. It checks that the tag matches `package.json`, the Android `versionName` and a `CHANGELOG.md` section, runs all tests, builds and verifies the signed APK, and publishes a GitHub Release with the APK, its SHA-256 and that version's changelog.
+
+It needs four repository secrets, set once:
+
+```bash
+# from the folder that holds the key and signing.env
+base64 -w0 clipbox-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
+source signing.env
+printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | gh secret set ANDROID_KEYSTORE_PASSWORD
+printf '%s' "$ANDROID_KEY_ALIAS"         | gh secret set ANDROID_KEY_ALIAS
+printf '%s' "$ANDROID_KEY_PASSWORD"      | gh secret set ANDROID_KEY_PASSWORD
+```
+
+> **Back up the signing key.** Android only installs updates signed with the same key. If `clipbox-release.jks` and its password are lost, existing installs can't be updated; users would have to uninstall (losing their private notes unless they made a backup) and install fresh. Keep a copy somewhere safe, such as a password manager plus an offline copy. Never commit it.
+
 ## Modules
 
 ```

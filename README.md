@@ -309,7 +309,7 @@ Writes are atomic (temp file → rename) and flushed on shutdown. To back up, co
 
 - **pm2 (any OS):** `npm i -g pm2 && pm2 start server/index.js --name clipbox && pm2 save`
 - **Linux systemd:** create a service with `WorkingDirectory=/path/to/clipbox` and `ExecStart=/usr/bin/node server/index.js`.
-- **Windows:** use pm2, or a Task Scheduler task "At log on" that runs `node server\index.js` in the project folder.
+- **Windows (built in):** `npm run autostart:install` registers a per-user Task Scheduler task that starts ClipBox hidden when you log in, restarts it if it ever exits, and logs to `data\clipbox.log` (rotated at 5 MB). No admin rights needed. `npm run stop` stops it until the next login; `npm run autostart:uninstall` removes it.
 
 ## Project structure
 
