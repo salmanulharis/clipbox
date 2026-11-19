@@ -64,6 +64,7 @@ object Json {
             serverId = server?.str("serverId"),
             serverName = server?.str("serverName"),
             maxNoteBytes = server?.optInt("maxNoteBytes", 256 * 1024) ?: 256 * 1024,
+            maxFileBytes = server?.optLong("maxFileBytes", 25L * 1024 * 1024) ?: 25L * 1024 * 1024,
         )
     }
 
@@ -89,7 +90,7 @@ object Json {
         .put("clipboards", JSONArray(s.clipboards.map(::toJson)))
         .put("notes", JSONArray(s.notes.map(::toJson)))
         .put("me", s.me?.let { JSONObject().put("deviceId", opt(it.deviceId)).put("name", opt(it.name)).put("role", it.role.name.lowercase()) } ?: JSONObject.NULL)
-        .put("server", JSONObject().put("serverId", opt(s.serverId)).put("serverName", opt(s.serverName)).put("maxNoteBytes", s.maxNoteBytes))
+        .put("server", JSONObject().put("serverId", opt(s.serverId)).put("serverName", opt(s.serverName)).put("maxNoteBytes", s.maxNoteBytes).put("maxFileBytes", s.maxFileBytes))
 
     // ── private notes (same field names as the web app's export, so backups are interchangeable)
     fun privateNote(o: JSONObject) = PrivateNote(
