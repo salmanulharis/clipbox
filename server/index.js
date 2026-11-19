@@ -42,7 +42,7 @@ const NEED_RANK = { read: 0, write: 1, host: 2 };
 
 /**
  * SHA-256 fingerprint (lowercase hex) of the HTTPS certificate, or null over plain http.
- * Put in QR codes so the Android app can trust a self-signed LAN certificate (pinning on first use).
+ * Put in QR codes so API clients can pin a self-signed LAN certificate.
  */
 const CERT_SHA256 = (() => {
   if (!config.https) return null;
@@ -428,9 +428,9 @@ function connectInfo(req, ctx, groupId) {
   if (g && g.access !== 'all' && ctx.role !== 'host') throw new ValidationError('Only the host can invite devices to this group.', 403);
   const invite = g && g.id !== DEFAULT_GROUP ? g.id : '';
   const token = auth.createPairToken(invite);
-  // The #cb1.<serverId> fragment lets the Android app recognise a ClipBox QR;
+  // The #cb1.<serverId> fragment lets API clients recognise a ClipBox QR;
   // browsers ignore fragments, so camera-scanned links behave exactly as before.
-  // With HTTPS, the certificate fingerprint lets the app pin a self-signed LAN certificate.
+  // With HTTPS, the certificate fingerprint lets a client pin a self-signed LAN certificate.
   const fragment = `#cb1.${store.serverId}${CERT_SHA256 ? `.sha256-${CERT_SHA256}` : ''}`;
   const withToken = (base) => `${base}/join?t=${encodeURIComponent(token)}${fragment}`;
   const urls = localUrls(config).map((u) => ({
@@ -557,7 +557,7 @@ route('POST', /^\/api\/devices\/pair$/, async (req, res) => {
   if (invitedTo) store.addMember(invitedTo, device.id);
   json(res, 201, {
     deviceId: device.id,
-    groupId: invitedTo, // the group this invitation was for, so the app can open it
+    groupId: invitedTo, // the group this invitation was for, so the client can open it
     deviceToken: token,
     role: device.role,
     serverId: store.serverId,
@@ -651,7 +651,7 @@ route('POST', /^\/api\/groups\/([\w-]+)\/join$/, async (req, res, m, url, ctx) =
   const g = groupOf(m[1]);
   if (!g || !canListGroup(ctx, g)) throw new ValidationError('Group not found.', 404);
   if (canSeeGroup(ctx, g)) return json(res, 200, publicGroup(g, ctx)); // already in
-  if (!ctx.device) throw new ValidationError('Open ClipBox in a browser or the app to join groups.');
+  if (!ctx.device) throw new ValidationError('Open ClipBox in a browser to join groups.');
   if (auth.rateLimited(req)) return json(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
   if (!store.checkGroupPassword(g.id, String(body.password ?? ''))) {
     auth.recordFailure(req);

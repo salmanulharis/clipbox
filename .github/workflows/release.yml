@@ -1,8 +1,7 @@
 name: Release
 
-# Push a tag like v1.4.0 to publish a GitHub Release with a signed Android APK.
-# Needs repository secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
-# ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD (see android/README.md → Releases).
+# Push a tag like v1.5.0 to publish a GitHub Release. The notes are that version's
+# CHANGELOG.md section; GitHub attaches the source code automatically. No secrets needed.
 on:
   push:
     tags: ['v*']
@@ -12,16 +11,15 @@ permissions:
 
 jobs:
   release:
-    name: Build and publish ${{ github.ref_name }}
+    name: Publish ${{ github.ref_name }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check versions match the tag
+      - name: Check the version matches the tag
         run: |
           V="${GITHUB_REF_NAME#v}"
           grep -q "\"version\": \"$V\"" package.json || { echo "package.json version != $V"; exit 1; }
-          grep -q "versionName = \"$V\"" android/app/build.gradle.kts || { echo "Android versionName != $V"; exit 1; }
           grep -q "^## \[$V\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$V] section"; exit 1; }
 
       - uses: actions/setup-node@v5
@@ -31,51 +29,17 @@ jobs:
       - run: npm ci
       - run: npm test
 
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v5
-      - name: Install Android platform 37
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" > /dev/null
-
-      - name: Restore signing key
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "Signing secrets are missing"; exit 1; }
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-
-      - name: Test and build the signed APK
-        working-directory: android
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew test :app:assembleRelease --console=plain
-
-      - name: Verify signature and prepare files
+      - name: Release notes
         run: |
           V="${GITHUB_REF_NAME#v}"
-          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
-          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/release/app-release.apk | tee signer.txt
-          cp android/app/build/outputs/apk/release/app-release.apk "clipbox-android-$V.apk"
-          sha256sum "clipbox-android-$V.apk" > "clipbox-android-$V.apk.sha256"
-          # Release notes = this version's CHANGELOG section + install hints.
           awk -v h="## [$V]" 'index($0, h) == 1 {on=1; next} on && index($0, "## [") == 1 {exit} on {print}' CHANGELOG.md > notes.md
           {
             echo
             echo "### Install"
-            echo "- **Server / web app:** download the source below, then \`npm install && npm start\` (see README)."
-            echo "- **Android:** install \`clipbox-android-$V.apk\` (allow installs from your browser or file manager)."
-            echo "- APK signing certificate SHA-256: \`$(grep -m1 'SHA-256 digest' signer.txt | awk '{print $NF}')\`"
+            echo "Download the source below, then \`npm install && npm start\` (see the README)."
           } >> notes.md
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          V="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" "clipbox-android-$V.apk" "clipbox-android-$V.apk.sha256" \
-            --title "ClipBox $V" --notes-file notes.md --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" --title "ClipBox ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag

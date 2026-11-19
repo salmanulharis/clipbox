@@ -17,8 +17,8 @@
  * trashed flags stay readable, so trash cleanup works while locked.
  *
  * Backups: plain JSON, or encrypted ".cbx" files in the same format as the
- * ClipBox Android app ("CBX1" | uint32 iterations | 16-byte salt | 12-byte IV |
- * AES-GCM ciphertext), so encrypted backups move freely between web and Android.
+ * .cbx format ("CBX1" | uint32 iterations | 16-byte salt | 12-byte IV |
+ * AES-GCM ciphertext), so encrypted backups move freely between browsers.
  */
 const PrivateStore = (() => {
   const DB_NAME = 'clipbox-private';
@@ -29,7 +29,7 @@ const PrivateStore = (() => {
   const MAX_BODY = 1024 * 1024;
   const MAX_TAGS = 20;
   const LOCK_ITERATIONS = 600000;
-  const BACKUP_ITERATIONS = 310000; // same default as the Android app
+  const BACKUP_ITERATIONS = 310000; // PBKDF2-SHA256 iterations for new backups
   const MAGIC = [0x43, 0x42, 0x58, 0x31]; // "CBX1"
 
   let backend = null; // 'idb' | 'local' | 'memory'
@@ -396,7 +396,7 @@ const PrivateStore = (() => {
     return data;
   }
 
-  /** Encrypted backup, same format as the Android app. */
+  /** Encrypted .cbx backup. */
   async function exportEncrypted(passphrase, iterations = BACKUP_ITERATIONS) {
     const data = await backupObject();
     const salt = rand(16);
@@ -450,7 +450,7 @@ const PrivateStore = (() => {
     return { added, updated, skipped };
   }
 
-  /** Import a backup file (plain JSON or encrypted .cbx from web or Android). */
+  /** Import a backup file (plain JSON or encrypted .cbx). */
   async function importFile(bytes, passphrase) {
     if (isEncryptedBackup(bytes)) {
       if (!passphrase) throw new PassphraseRequired();

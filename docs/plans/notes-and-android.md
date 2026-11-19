@@ -1,5 +1,7 @@
 # Plan: Private & Shared Notes + Android App
 
+> **Update (v1.5.0):** the Android app described here was removed. ClipBox is web only; phones use it in the browser. This document is kept as a record of the original design.
+
 Status: **Approved (recommended options).** Phase 1 shipped in v1.1.0, Phase 2 in v1.2.0, Phase 3 (Android MVP) in v1.3.0, Phase 4 in v1.4.0 (except multiple groups, see §11).
 
 ---
