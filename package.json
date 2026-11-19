@@ -1,6 +1,6 @@
 {
   "name": "clipbox",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lightweight self-hosted clipboard sharing across desktop, mobile and tablet browsers, with live sync, QR connect and ngrok/Cloudflare tunnel support.",
   "main": "server/index.js",
   "private": true,
@@ -8,7 +8,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "check": "node --check server/index.js && node --check server/store.js && node --check server/auth.js && node --check server/tunnel.js && node --check server/network.js && node --check server/config.js && node --check public/app.js && node --check public/theme.js",
-    "test": "node --test test/api.test.mjs"
+    "test": "node --test test/api.test.mjs test/devices.test.mjs test/migration.test.mjs"
   },
   "keywords": [
     "clipboard",

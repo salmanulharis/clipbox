@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const fsp = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
@@ -8,9 +9,16 @@ const { EventEmitter } = require('events');
 const MAX_CLIPBOARDS = 200;
 const MAX_ITEMS = 1000;
 const MAX_NAME = 60;
+const MAX_DEVICE_NAME = 40;
+const MAX_DEVICES = 500;
+const SCHEMA_VERSION = 2;
+const WEB_DEVICE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const ROLES = ['host', 'member', 'viewer'];
 
 const newId = () => crypto.randomBytes(9).toString('base64url');
 const now = () => Date.now();
+
+class SchemaError extends Error {}
 
 class ValidationError extends Error {
   constructor(message, status = 400) {
@@ -27,6 +35,13 @@ function cleanName(name) {
   if (!v) throw new ValidationError('Name cannot be empty.');
   if (v.length > MAX_NAME) throw new ValidationError(`Name is too long (max ${MAX_NAME} characters).`);
   return v;
+}
+
+function cleanDeviceName(name) {
+  // eslint-disable-next-line no-control-regex
+  const v = String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!v) throw new ValidationError('Device name cannot be empty.');
+  return v.slice(0, MAX_DEVICE_NAME);
 }
 
 /**
@@ -63,12 +78,39 @@ class Store extends EventEmitter {
       }
     }
     if (!this.db) {
-      this.db = { version: 1, clipboards: [] };
+      this.db = { version: SCHEMA_VERSION, clipboards: [] };
       this._create('General');
-      this.saveSync();
     }
+    this._migrate();
+    this.pruneDevices();
+    this.saveSync();
     this.rev = 1;
     this._cleanupOrphanFiles();
+  }
+
+  /**
+   * Upgrade older databases in place. A one-time copy of the original v1 file
+   * is kept as db.v1-backup.json. Databases from a newer ClipBox are refused
+   * rather than risk silently dropping data.
+   */
+  _migrate() {
+    const v = Number(this.db.version) || 1;
+    if (v > SCHEMA_VERSION) {
+      throw new SchemaError(
+        `data/db.json uses schema v${v}, but this ClipBox only understands up to v${SCHEMA_VERSION}. ` +
+        'Update ClipBox, or restore an older backup.',
+      );
+    }
+    if (v < 2) {
+      const backup = path.join(this.dir, 'db.v1-backup.json');
+      if (!fs.existsSync(backup) && fs.existsSync(this.file)) fs.copyFileSync(this.file, backup);
+      console.log('[store] upgraded database to schema v2 (backup: db.v1-backup.json)');
+    }
+    this.db.version = SCHEMA_VERSION;
+    if (!this.db.serverId) this.db.serverId = `srv_${newId()}`;
+    if (!this.db.serverName) this.db.serverName = os.hostname();
+    if (!Array.isArray(this.db.notes)) this.db.notes = [];
+    if (!Array.isArray(this.db.devices)) this.db.devices = [];
   }
 
   // ── persistence ──────────────────────────────────────────────
@@ -120,6 +162,13 @@ class Store extends EventEmitter {
     this._dirty = false;
   }
 
+  /** Persist without broadcasting a sync event (device bookkeeping). */
+  _persist() {
+    this._dirty = true;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._save(), 500);
+  }
+
   flush() {
     if (this._dirty) this.saveSync();
   }
@@ -140,6 +189,86 @@ class Store extends EventEmitter {
 
   filePath(itemId) {
     return path.join(this.filesDir, itemId.replace(/[^A-Za-z0-9_-]/g, ''));
+  }
+
+  // ── server identity ──────────────────────────────────────────
+  get serverId() {
+    return this.db.serverId;
+  }
+
+  get serverName() {
+    return this.db.serverName;
+  }
+
+  // ── devices ──────────────────────────────────────────────────
+  getDevice(id) {
+    return (id && this.db.devices.find((d) => d.id === id)) || null;
+  }
+
+  findDeviceByTokenHash(hash) {
+    return this.db.devices.find((d) => d.tokenHash && d.tokenHash === hash) || null;
+  }
+
+  listDevices() {
+    return this.db.devices;
+  }
+
+  createDevice({ name, platform = 'web', role = 'member', tokenHash = null }) {
+    if (this.db.devices.length >= MAX_DEVICES) {
+      this.pruneDevices(0);
+      if (this.db.devices.length >= MAX_DEVICES) throw new ValidationError('Too many devices. Remove some in Devices.', 409);
+    }
+    const t = now();
+    const device = {
+      id: `dev_${newId()}`,
+      name: cleanDeviceName(name),
+      platform: ['web', 'android', 'ios', 'cli', 'other'].includes(platform) ? platform : 'other',
+      role: ROLES.includes(role) ? role : 'member',
+      tokenHash,
+      createdAt: t,
+      lastSeenAt: t,
+      revoked: false,
+    };
+    this.db.devices.push(device);
+    this._persist();
+    return device;
+  }
+
+  updateDevice(id, { name, role, revoked }) {
+    const d = this.getDevice(id);
+    if (!d) throw new ValidationError('Device not found.', 404);
+    if (name !== undefined) d.name = cleanDeviceName(name);
+    if (role !== undefined) {
+      if (!ROLES.includes(role)) throw new ValidationError('Invalid role.');
+      d.role = role;
+    }
+    if (revoked !== undefined) d.revoked = Boolean(revoked);
+    this._persist();
+    return d;
+  }
+
+  deleteDevice(id) {
+    const before = this.db.devices.length;
+    this.db.devices = this.db.devices.filter((d) => d.id !== id);
+    if (this.db.devices.length === before) throw new ValidationError('Device not found.', 404);
+    this._persist();
+  }
+
+  /** Update last-seen at most once a minute to avoid needless writes. */
+  touchDevice(device) {
+    const t = now();
+    if (t - device.lastSeenAt > 60000) {
+      device.lastSeenAt = t;
+      this._persist();
+    }
+  }
+
+  /** Forget browser devices not seen for 90 days (app devices are kept until removed). */
+  pruneDevices(ttl = WEB_DEVICE_TTL_MS) {
+    const cutoff = now() - ttl;
+    const before = this.db.devices.length;
+    this.db.devices = this.db.devices.filter((d) => d.tokenHash || d.role === 'host' || d.lastSeenAt >= cutoff);
+    if (this.db.devices.length !== before) this._persist();
   }
 
   // ── queries ──────────────────────────────────────────────────
@@ -273,4 +402,4 @@ async function renameWithRetry(from, to, attempts = 5) {
   }
 }
 
-module.exports = { Store, ValidationError, newId };
+module.exports = { Store, ValidationError, SchemaError, newId, SCHEMA_VERSION };

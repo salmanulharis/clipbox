@@ -6,8 +6,9 @@ const path = require('path');
 const QRCode = require('qrcode');
 
 const config = require('./config');
-const { Store, ValidationError, newId } = require('./store');
-const { Auth, PAIR_TTL_MS } = require('./auth');
+const { Store, ValidationError, SchemaError, newId } = require('./store');
+const { Auth, PAIR_TTL_MS, deviceNameFromUA } = require('./auth');
+const { version: VERSION } = require('../package.json');
 const { localUrls } = require('./network');
 const { Tunnel } = require('./tunnel');
 
@@ -25,9 +26,19 @@ const MIME = {
 };
 
 const store = new Store(config.dataDir, { maxTextBytes: config.maxTextBytes });
-store.load();
+try {
+  store.load();
+} catch (err) {
+  if (err instanceof SchemaError) {
+    console.error(`\n  Cannot start: ${err.message}\n`);
+    process.exit(1);
+  }
+  throw err;
+}
 const tunnel = new Tunnel(config);
-const auth = new Auth(config, () => tunnel.url);
+const auth = new Auth(config, store, () => tunnel.url);
+const ROLE_RANK = { viewer: 0, member: 1, host: 2 };
+const NEED_RANK = { read: 0, write: 1, host: 2 };
 
 // ── helpers ───────────────────────────────────────────────────
 const SECURITY_HEADERS = {
@@ -83,6 +94,9 @@ function sanitizeFilename(name) {
 
 function serverInfo(req) {
   return {
+    serverId: store.serverId,
+    serverName: store.serverName,
+    version: VERSION,
     publicRequest: auth.isPublic(req),
     authMode: config.authMode,
     passwordSet: auth.passwordSet,
@@ -92,28 +106,98 @@ function serverInfo(req) {
   };
 }
 
+function publicDevice(d, ctx) {
+  return {
+    id: d.id,
+    name: d.name,
+    platform: d.platform,
+    role: d.role,
+    revoked: d.revoked,
+    app: Boolean(d.tokenHash),
+    createdAt: d.createdAt,
+    lastSeenAt: d.lastSeenAt,
+    current: Boolean(ctx?.device && ctx.device.id === d.id),
+  };
+}
+
+function me(ctx) {
+  return {
+    deviceId: ctx.device?.id || null,
+    name: ctx.device?.name || null,
+    platform: ctx.device?.platform || null,
+    role: ctx.role,
+  };
+}
+
+/** Make sure a browser has a device record + cookie; upgrade legacy sessions. Returns Set-Cookie values. */
+function ensureWebDevice(req, ctx) {
+  const cookies = [];
+  if (ctx.via === 'bearer') return cookies;
+  if (!ctx.device) {
+    ctx.device = store.createDevice({ name: deviceNameFromUA(req.headers['user-agent']), platform: 'web' });
+    if (!auth.isHostMachine(req)) ctx.role = ctx.device.role;
+    cookies.push(auth.deviceCookie(req, ctx.device.id));
+  }
+  if (ctx.session && !ctx.session.deviceId) cookies.push(auth.sessionCookie(req, ctx.device.id));
+  return cookies;
+}
+
+/** Device to reuse when a browser signs in: its existing (non-revoked) device cookie, or a new one. */
+function deviceForSignIn(req, role) {
+  const existing = auth.cookieDevice(req);
+  if (existing) {
+    if (role === 'host' && existing.role !== 'host') store.updateDevice(existing.id, { role: 'host' });
+    return existing;
+  }
+  return store.createDevice({ name: deviceNameFromUA(req.headers['user-agent']), platform: 'web', role });
+}
+
+function knownUrls() {
+  const urls = localUrls(config).filter((u) => !u.virtual).map((u) => ({ kind: 'local', url: u.url }));
+  if (tunnel.url) urls.push({ kind: 'public', url: tunnel.url });
+  return urls;
+}
+
 // ── live sync (Server-Sent Events + long-poll fallback) ─────
-const sseClients = new Set();
+const sseClients = new Map(); // res -> deviceId
 const waiters = new Set();
 
 store.on('change', (event) => {
   const payload = `id: ${event.rev}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const res of sseClients) res.write(payload);
+  for (const res of sseClients.keys()) res.write(payload);
   for (const w of waiters) w();
 });
 
 tunnel.on('update', (info) => {
   const payload = `event: tunnel\ndata: ${JSON.stringify(info)}\n\n`;
-  for (const res of sseClients) res.write(payload);
+  for (const res of sseClients.keys()) res.write(payload);
   if (info.url && info.status === 'ready') printPublic(info.url);
   else if (info.error) console.log(`[tunnel] ${info.error}`);
 });
 
 setInterval(() => {
-  for (const res of sseClients) res.write(': ping\n\n');
+  for (const res of sseClients.keys()) res.write(': ping\n\n');
 }, 20000).unref();
 
-function handleEvents(req, res) {
+setInterval(() => store.pruneDevices(), 24 * 60 * 60 * 1000).unref();
+
+/** Close live connections of a revoked/removed device so it re-authenticates. */
+function kickDevice(deviceId) {
+  for (const [res, id] of sseClients) {
+    if (id === deviceId) {
+      sseClients.delete(res);
+      res.end();
+    }
+  }
+}
+
+/** Tell a device its own role/name changed. */
+function notifyDevice(deviceId, payload) {
+  const msg = `event: me\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const [res, id] of sseClients) if (id === deviceId) res.write(msg);
+}
+
+function handleEvents(req, res, ctx) {
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -124,7 +208,7 @@ function handleEvents(req, res) {
   // Padding helps proxies that buffer small responses flush immediately.
   res.write(`:${' '.repeat(2048)}\n\n`);
   res.write(`event: hello\ndata: ${JSON.stringify({ rev: store.rev, boot: store.boot })}\n\n`);
-  sseClients.add(res);
+  sseClients.set(res, ctx.device?.id || null);
   req.on('close', () => sseClients.delete(res));
 }
 
@@ -250,23 +334,26 @@ function serveStatic(req, res, pathname) {
 // ── connection info / QR ─────────────────────────────────────
 function connectInfo(req) {
   const token = auth.createPairToken();
-  const withToken = (base) => `${base}/join?t=${encodeURIComponent(token)}`;
+  // The #cb1.<serverId> fragment lets the Android app recognise a ClipBox QR;
+  // browsers ignore fragments, so camera-scanned links behave exactly as before.
+  const fragment = `#cb1.${store.serverId}`;
+  const withToken = (base) => `${base}/join?t=${encodeURIComponent(token)}${fragment}`;
   const urls = localUrls(config).map((u) => ({
     kind: 'local',
     label: u.virtual ? `${u.label} (virtual)` : u.label,
     url: u.url,
-    link: config.authMode === 'all' && token ? withToken(u.url) : u.url,
+    link: config.authMode === 'all' ? withToken(u.url) : `${u.url}/${fragment}`,
   }));
   if (tunnel.url) {
     urls.unshift({
       kind: 'public',
       label: config.tunnel === 'none' ? 'Public URL' : `Public (${config.tunnel})`,
       url: tunnel.url,
-      link: token ? withToken(tunnel.url) : tunnel.url,
-      blocked: !token,
+      link: withToken(tunnel.url),
+      blocked: !auth.passwordSet,
     });
   }
-  return { urls, token, tokenMinutes: token ? PAIR_TTL_MS / 60000 : 0, tunnel: tunnel.info() };
+  return { urls, token, fragment, tokenMinutes: PAIR_TTL_MS / 60000, tunnel: tunnel.info() };
 }
 
 // ── router ───────────────────────────────────────────────────
@@ -274,15 +361,30 @@ const routes = [];
 const route = (method, pattern, handler, opts = {}) => routes.push({ method, pattern, handler, ...opts });
 
 route('GET', /^\/api\/session$/, (req, res) => {
-  const a = auth.check(req);
-  json(res, 200, { authenticated: a.ok, required: a.required, reason: a.reason || null, ...serverInfo(req) });
+  const a = auth.identify(req);
+  json(res, 200, { authenticated: a.ok, required: a.required, reason: a.reason || null, role: a.ok ? a.role : null, ...serverInfo(req) });
+}, { open: true });
+
+route('GET', /^\/api\/info$/, (req, res) => {
+  json(res, 200, {
+    app: 'clipbox',
+    apiVersion: 2,
+    version: VERSION,
+    serverId: store.serverId,
+    serverName: store.serverName,
+    authMode: config.authMode,
+    authRequired: auth.requiresAuth(req),
+    passwordSet: auth.passwordSet,
+  });
 }, { open: true });
 
 route('POST', /^\/api\/login$/, async (req, res) => {
   const body = await readJson(req, 4096);
   const r = auth.login(req, body.password);
   if (!r.ok) return json(res, r.status, { error: r.error });
-  json(res, 200, { ok: true }, { 'Set-Cookie': auth.sessionCookie(req) });
+  // Knowing the host password makes this browser a host device.
+  const device = deviceForSignIn(req, 'host');
+  json(res, 200, { ok: true }, { 'Set-Cookie': [auth.sessionCookie(req, device.id), auth.deviceCookie(req, device.id)] });
 }, { open: true });
 
 route('POST', /^\/api\/logout$/, (req, res) => {
@@ -292,15 +394,23 @@ route('POST', /^\/api\/logout$/, (req, res) => {
 route('GET', /^\/join$/, (req, res, m, url) => {
   const token = url.searchParams.get('t');
   if (auth.verifyPairToken(token)) {
-    return send(res, 302, '', { Location: '/', 'Set-Cookie': auth.sessionCookie(req), 'Cache-Control': 'no-store' });
+    const device = deviceForSignIn(req, 'member');
+    return send(res, 302, '', {
+      Location: '/',
+      'Set-Cookie': [auth.sessionCookie(req, device.id), auth.deviceCookie(req, device.id)],
+      'Cache-Control': 'no-store',
+    });
   }
   send(res, 302, '', { Location: '/?join=expired', 'Cache-Control': 'no-store' });
 }, { open: true });
 
 route('GET', /^\/api\/health$/, (req, res) => json(res, 200, { ok: true }), { open: true });
 
-route('GET', /^\/api\/state$/, (req, res) => json(res, 200, { ...store.snapshot(), server: serverInfo(req) }));
-route('GET', /^\/api\/events$/, (req, res) => handleEvents(req, res));
+route('GET', /^\/api\/state$/, (req, res, m, url, ctx) => {
+  const cookies = ensureWebDevice(req, ctx);
+  json(res, 200, { ...store.snapshot(), server: serverInfo(req), me: me(ctx) }, cookies.length ? { 'Set-Cookie': cookies } : {});
+});
+route('GET', /^\/api\/events$/, (req, res, m, url, ctx) => handleEvents(req, res, ctx));
 route('GET', /^\/api\/sync$/, (req, res, m, url) => handleSync(req, res, url));
 route('GET', /^\/api\/connect$/, (req, res) => json(res, 200, connectInfo(req)));
 
@@ -311,6 +421,70 @@ route('GET', /^\/api\/qr$/, async (req, res, m, url) => {
   send(res, 200, svg, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
 });
 
+// ── devices ──────────────────────────────────────────────────
+route('POST', /^\/api\/devices\/pair$/, async (req, res) => {
+  const body = await readJson(req, 4096);
+  if (auth.rateLimited(req)) return json(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+  let role;
+  if (body.pairToken) {
+    if (!auth.consumePairToken(String(body.pairToken))) {
+      auth.recordFailure(req);
+      return json(res, 401, { error: 'This QR code has expired or was already used. Show a new one.', reason: 'pair_expired' });
+    }
+    role = 'member';
+  } else if (body.password !== undefined) {
+    const r = auth.login(req, body.password);
+    if (!r.ok) return json(res, r.status, { error: r.error, reason: 'login' });
+    role = 'host';
+  } else {
+    const ctx = auth.identify(req);
+    if (!ctx.ok || ctx.via === 'bearer') {
+      return json(res, 401, { error: 'Scan a fresh QR code or enter the server password.', reason: ctx.reason === 'no_password' ? 'no_password' : 'login' });
+    }
+    role = ctx.role;
+  }
+  const { token, hash } = auth.newDeviceToken();
+  const platform = ['android', 'ios', 'cli', 'other'].includes(body.platform) ? body.platform : 'other';
+  const device = store.createDevice({ name: body.name || (platform === 'android' ? 'Android device' : 'Device'), platform, role, tokenHash: hash });
+  json(res, 201, {
+    deviceId: device.id,
+    deviceToken: token,
+    role: device.role,
+    serverId: store.serverId,
+    serverName: store.serverName,
+    version: VERSION,
+    urls: knownUrls(),
+  });
+}, { open: true });
+
+route('GET', /^\/api\/devices$/, (req, res, m, url, ctx) => {
+  json(res, 200, { devices: store.listDevices().map((d) => publicDevice(d, ctx)) });
+}, { need: 'host' });
+
+route('DELETE', /^\/api\/devices\/me$/, (req, res, m, url, ctx) => {
+  if (!ctx.device) throw new ValidationError('This client has no device record.');
+  const id = ctx.device.id;
+  store.deleteDevice(id);
+  kickDevice(id);
+  json(res, 200, { ok: true }, ctx.via === 'bearer' ? {} : { 'Set-Cookie': auth.clearCookie(req) });
+}, { need: 'read' });
+
+route('PATCH', /^\/api\/devices\/([\w-]+)$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, 4096);
+  const prevRole = store.getDevice(m[1])?.role;
+  const d = store.updateDevice(m[1], { name: body.name, role: body.role, revoked: body.revoked });
+  if (d.revoked) kickDevice(d.id);
+  else if (d.role !== prevRole || body.name !== undefined) notifyDevice(d.id, { role: d.role, name: d.name });
+  json(res, 200, publicDevice(d, ctx));
+}, { need: 'host' });
+
+route('DELETE', /^\/api\/devices\/([\w-]+)$/, (req, res, m) => {
+  store.deleteDevice(m[1]);
+  kickDevice(m[1]);
+  json(res, 200, { ok: true });
+}, { need: 'host' });
+
+// ── clipboards ───────────────────────────────────────────────
 route('POST', /^\/api\/clipboards$/, async (req, res) => {
   const body = await readJson(req, 4096);
   json(res, 201, store.createClipboard(body.name));
@@ -356,22 +530,34 @@ async function handler(req, res) {
 
   // CSRF protection: state-changing API calls must carry a custom header,
   // which browsers refuse to send cross-origin without a CORS preflight.
-  if (req.method !== 'GET' && req.headers['x-clipbox'] !== '1') {
+  // Bearer-token clients are exempt: browsers can't attach that header cross-site either.
+  if (req.method !== 'GET' && req.headers['x-clipbox'] !== '1' && !auth.bearerToken(req)) {
     return json(res, 403, { error: 'Missing request header.' });
   }
 
+  let ctx = null;
   if (!r.open) {
-    const a = auth.check(req);
-    if (!a.ok) {
-      const msg = a.reason === 'no_password'
+    ctx = auth.identify(req);
+    if (!ctx.ok) {
+      const msg = ctx.reason === 'no_password'
         ? 'Remote access is disabled: set AUTH_PASSWORD on the server to enable it.'
-        : 'Login required.';
-      return json(res, a.reason === 'no_password' ? 403 : 401, { error: msg, reason: a.reason });
+        : ctx.reason === 'device_revoked'
+          ? 'This device was removed by the host. Scan a new QR code or sign in again.'
+          : 'Login required.';
+      return json(res, ctx.reason === 'no_password' ? 403 : 401, { error: msg, reason: ctx.reason });
     }
+    const need = r.need || (req.method === 'GET' ? 'read' : 'write');
+    if (ROLE_RANK[ctx.role] < NEED_RANK[need]) {
+      return json(res, 403, {
+        error: need === 'host' ? 'Only the host can do this.' : 'This device is view-only.',
+        reason: 'forbidden',
+      });
+    }
+    if (ctx.device) store.touchDevice(ctx.device);
   }
 
   try {
-    await r.handler(req, res, pathname.match(r.pattern), url);
+    await r.handler(req, res, pathname.match(r.pattern), url, ctx);
   } catch (err) {
     if (res.headersSent) return res.destroy();
     if (err instanceof ValidationError) return json(res, err.status, { error: err.message });
@@ -420,7 +606,7 @@ server.on('error', (err) => {
 server.listen(config.port, config.host, async () => {
   const proto = config.https ? 'https' : 'http';
   const locals = localUrls(config);
-  console.log('\n  ClipBox is running\n');
+  console.log(`\n  ClipBox ${VERSION} is running — "${store.serverName}"\n`);
   console.log(`  This PC: ${proto}://localhost:${config.port}`);
   for (const u of locals) console.log(`  Network: ${u.url}  (${u.label}${u.virtual ? ', virtual' : ''})`);
   if (config.host === '127.0.0.1' || config.host === 'localhost') console.log('  (HOST is loopback: other devices on your network cannot connect)');

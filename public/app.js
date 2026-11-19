@@ -28,6 +28,11 @@ const ICONS = {
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  devices: '<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M5 18h8"/><rect x="17" y="8" width="5" height="12" rx="1"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
   palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.7 1.7-1.7h2c3 0 5.5-2.5 5.5-5.5C22 6 17.5 2 12 2z"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -454,9 +459,26 @@ function applyEvent(ev) {
   render();
 }
 
+const ROLE_LABEL = { host: 'Host', member: 'Member', viewer: 'Viewer' };
+const isViewer = () => state.me?.role === 'viewer';
+
+function applyRole() {
+  const role = state.me?.role || 'member';
+  document.body.classList.toggle('viewer', role === 'viewer');
+  $('#role-badge').hidden = role !== 'viewer';
+  $('#btn-devices').hidden = role !== 'host';
+  if (role === 'viewer' && state.editing) cancelEdit();
+}
+
 async function loadState() {
   const data = await api('GET', '/api/state');
   state.server = data.server;
+  const prevRole = state.me?.role;
+  state.me = data.me || null;
+  applyRole();
+  if (prevRole && state.me && prevRole !== state.me.role) {
+    toast(`This device is now ${ROLE_LABEL[state.me.role] === 'Viewer' ? 'view-only' : `a ${ROLE_LABEL[state.me.role]}`}`);
+  }
   applySnapshot(data);
   state.loaded = true;
   return data;
@@ -506,6 +528,7 @@ function connectSync() {
   });
   es.addEventListener('change', (e) => applyEvent(JSON.parse(e.data)));
   es.addEventListener('tunnel', (e) => { if (state.server) state.server.tunnel = JSON.parse(e.data); });
+  es.addEventListener('me', () => loadState().catch(() => {})); // role/name changed by the host
   es.onerror = async () => {
     setStatus('offline');
     if (es.readyState === EventSource.CLOSED) {
@@ -557,6 +580,7 @@ window.addEventListener('online', () => { if (!$('#app').hidden && sync.mode ===
 async function addText(text) {
   const cb = active();
   if (!cb || !text.trim()) return false;
+  if (isViewer()) { toast('This device is view-only.', 'error'); return false; }
   const item = await attempt(() => api('POST', `/api/clipboards/${cb.id}/items`, { text }));
   if (item) { upsertItem(cb.id, item); return true; }
   return false;
@@ -565,6 +589,7 @@ async function addText(text) {
 async function uploadFiles(files) {
   const cb = active();
   if (!cb) return;
+  if (isViewer()) { toast('This device is view-only.', 'error'); return; }
   const max = state.server?.maxFileBytes || Infinity;
   for (let file of files) {
     if (file.size > max) { toast(`"${file.name}" is too large (max ${fmtBytes(max)}).`, 'error', 4000); continue; }
@@ -753,7 +778,8 @@ async function openConnect() {
   const isLoopback = /^(localhost|127\.|\[::1\])/.test(location.hostname);
   if (!isLoopback && !urls.some((u) => u.url === here)) {
     const needsToken = state.session?.required && data.token;
-    urls.push({ kind: 'current', label: 'This address', url: here, link: needsToken ? `${here}/join?t=${encodeURIComponent(data.token)}` : here });
+    const frag = data.fragment || '';
+    urls.push({ kind: 'current', label: 'This address', url: here, link: needsToken ? `${here}/join?t=${encodeURIComponent(data.token)}${frag}` : `${here}/${frag}` });
   }
   connect.urls = urls;
   if (!urls.length) {
@@ -782,6 +808,9 @@ async function openConnect() {
   showConnectUrl(data);
 
   const t = data.tunnel;
+  const meEl = $('#connect-me');
+  meEl.textContent = state.me?.name ? `This device: ${state.me.name} · ${ROLE_LABEL[state.me.role] || ''}` : '';
+
   const tunnelEl = $('#connect-tunnel');
   tunnelEl.textContent = '';
   if (t.provider !== 'none' && t.status !== 'ready') {
@@ -823,6 +852,97 @@ $('#connect-copy').addEventListener('click', async (e) => {
   if (!u) return;
   if (await copyText(u.link)) { flashButton(e.currentTarget); toast(u.link !== u.url ? 'Sign-in link copied (valid for a few minutes)' : 'Link copied'); }
 });
+
+// ── devices (host only) ──────────────────────────────────────
+const PLATFORM_LABEL = { web: 'Browser', android: 'Android app', ios: 'iOS app', cli: 'API client', other: 'App' };
+
+async function openDevices() {
+  openDialog($('#dlg-devices'));
+  await refreshDevices();
+}
+
+async function refreshDevices() {
+  const data = await attempt(() => api('GET', '/api/devices'));
+  if (!data) return;
+  const devices = data.devices.sort((a, b) => (b.current - a.current) || (a.revoked - b.revoked) || (b.lastSeenAt - a.lastSeenAt));
+  $('#device-list').replaceChildren(...devices.map(buildDeviceRow));
+  const note = $('#devices-note');
+  note.hidden = state.server?.authMode !== 'public';
+  note.textContent = 'AUTH_MODE is "public": browsers on your network can reconnect without a password even after being revoked. Use AUTH_MODE=all to control every device.';
+}
+
+function buildDeviceRow(d) {
+  const li = document.createElement('li');
+  li.className = `device-row${d.revoked ? ' revoked' : ''}`;
+  li.innerHTML = `${icon(d.platform === 'web' ? 'monitor' : 'phone')}
+    <div class="device-main"><button class="device-name" type="button"></button><div class="device-meta"></div></div>
+    <select class="role-select" aria-label="Role">
+      <option value="host">Host</option><option value="member">Member</option><option value="viewer">Viewer</option>
+    </select>
+    <div class="row-actions"></div>`;
+  const nameBtn = li.querySelector('.device-name');
+  nameBtn.textContent = d.name;
+  nameBtn.title = 'Rename';
+  const meta = li.querySelector('.device-meta');
+  const parts = [PLATFORM_LABEL[d.platform] || 'Device', d.revoked ? 'revoked' : `seen ${timeAgo(d.lastSeenAt)}`];
+  meta.textContent = parts.join(' · ');
+  if (d.current) meta.insertAdjacentHTML('afterbegin', '<span class="you">This device</span> · ');
+
+  const select = li.querySelector('.role-select');
+  select.value = d.role;
+  select.disabled = d.revoked;
+
+  const actions = li.querySelector('.row-actions');
+  const btn = (name, tip, cls = '') => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `icon-btn sm ${cls}`;
+    b.dataset.tip = tip;
+    b.setAttribute('aria-label', tip);
+    b.innerHTML = icon(name);
+    actions.append(b);
+    return b;
+  };
+
+  const patch = async (body, okMsg) => {
+    const r = await attempt(() => api('PATCH', `/api/devices/${d.id}`, body), okMsg);
+    await refreshDevices();
+    if (r && d.current) loadState().catch(() => {});
+    return r;
+  };
+
+  nameBtn.addEventListener('click', async () => {
+    const name = await ask({ title: 'Rename device', value: d.name, ok: 'Rename' });
+    if (name && name !== d.name) patch({ name }, 'Renamed');
+  });
+  select.addEventListener('change', async () => {
+    const role = select.value;
+    if (d.current && role !== 'host') {
+      const yes = await confirmDialog({ title: 'Change your own role?', message: 'This device will lose access to device management (unless it is the server machine itself).', ok: 'Change' });
+      if (!yes) { select.value = d.role; return; }
+    }
+    patch({ role }, `${d.name} is now ${ROLE_LABEL[role]}`);
+  });
+
+  if (d.revoked) {
+    btn('undo', 'Restore').addEventListener('click', () => patch({ revoked: false }, 'Device restored'));
+    btn('trash', 'Remove', 'danger').addEventListener('click', async () => {
+      const yes = await confirmDialog({ title: `Remove "${d.name}"?`, message: 'It disappears from this list. To use ClipBox again it must reconnect.', ok: 'Remove', danger: true });
+      if (yes && (await attempt(() => api('DELETE', `/api/devices/${d.id}`), 'Device removed'))) refreshDevices();
+    });
+  } else {
+    btn('ban', 'Revoke access', 'danger').addEventListener('click', async () => {
+      const yes = await confirmDialog({
+        title: `Revoke "${d.name}"?`,
+        message: d.current ? 'This signs out the device you are using right now.' : 'It is signed out immediately and must scan a new QR code or sign in to return.',
+        ok: 'Revoke',
+        danger: true,
+      });
+      if (yes) patch({ revoked: true }, 'Access revoked');
+    });
+  }
+  return li;
+}
 
 // ── QR scanner ───────────────────────────────────────────────
 const scanner = { stream: null, raf: null, detector: null, busy: false, result: null };
@@ -984,7 +1104,9 @@ function showLogin(reason) {
   }
   fields.hidden = false;
   const expired = new URLSearchParams(location.search).get('join') === 'expired';
-  msg.textContent = expired ? 'That QR code has expired. Scan a fresh one, or enter the password.' : 'Enter the password to continue.';
+  msg.textContent = reason === 'device_revoked'
+    ? 'This device was removed by the host. Scan a new QR code or enter the password.'
+    : expired ? 'That QR code has expired. Scan a fresh one, or enter the password.' : 'Enter the password to continue.';
   setTimeout(() => $('#login-password').focus(), 50);
 }
 
@@ -1120,6 +1242,7 @@ function wire() {
   $('#btn-copy-all').addEventListener('click', (e) => copyAll(e.currentTarget));
   $('#btn-connect').addEventListener('click', openConnect);
   $('#btn-scan').addEventListener('click', openScanner);
+  $('#btn-devices').addEventListener('click', openDevices);
   $('#btn-logout').addEventListener('click', logout);
 
   // Paste anywhere: files are uploaded; text outside an input is added instantly.
