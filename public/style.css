@@ -634,3 +634,7 @@ body.viewer .board-name { pointer-events: none; }
 .unlock-form { display: flex; gap: 8px; max-width: 360px; margin: 0 auto; }
 .unlock-form .text-input { margin: 0; }
 .banner-buttons { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+/* Dialog footers wrap instead of pushing buttons out of the dialog on narrow screens / wide fonts. */
+.dlg-foot { flex-wrap: wrap; align-items: center; }
+.dlg-foot .link-btn { margin-right: auto; }
+#dlg-pass .dlg-foot .spacer { display: none; }
