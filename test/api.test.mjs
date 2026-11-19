@@ -60,9 +60,14 @@ before(async () => {
   throw new Error('server did not start');
 });
 
-after(() => {
-  server?.kill();
-  rmSync(dataDir, { recursive: true, force: true });
+after(async () => {
+  // Wait for the server to exit (it flushes data on shutdown) before removing its data dir.
+  if (server && server.exitCode === null) {
+    const exited = new Promise((resolve) => server.once('exit', resolve));
+    server.kill();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  }
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test('local requests need no login and get a default clipboard', async () => {
