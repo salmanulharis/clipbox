@@ -14,6 +14,10 @@ const MAX_DEVICES = 500;
 const SCHEMA_VERSION = 2;
 const WEB_DEVICE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const ROLES = ['host', 'member', 'viewer'];
+const MAX_NOTES = 2000;
+const MAX_NOTE_TITLE = 200;
+const MAX_TAGS = 20;
+const MAX_TAG = 30;
 
 const newId = () => crypto.randomBytes(9).toString('base64url');
 const now = () => Date.now();
@@ -21,10 +25,38 @@ const now = () => Date.now();
 class SchemaError extends Error {}
 
 class ValidationError extends Error {
-  constructor(message, status = 400) {
+  constructor(message, status = 400, extra = undefined) {
     super(message);
     this.status = status;
+    this.extra = extra; // merged into the JSON error response
   }
+}
+
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+
+function cleanTitle(title) {
+  if (title === undefined || title === null) return '';
+  if (typeof title !== 'string') throw new ValidationError('Title must be text.');
+  const v = title.replace(CONTROL, '').replace(/\s+/g, ' ').trim();
+  if (v.length > MAX_NOTE_TITLE) throw new ValidationError(`Title is too long (max ${MAX_NOTE_TITLE} characters).`);
+  return v;
+}
+
+function cleanTags(tags) {
+  if (tags === undefined || tags === null) return [];
+  if (!Array.isArray(tags)) throw new ValidationError('Tags must be a list.');
+  const out = [];
+  const seen = new Set();
+  for (const t of tags) {
+    if (typeof t !== 'string') throw new ValidationError('Tags must be text.');
+    const v = t.replace(CONTROL, '').replace(/^#+/, '').replace(/\s+/g, '-').trim().slice(0, MAX_TAG);
+    if (!v || seen.has(v.toLowerCase())) continue;
+    seen.add(v.toLowerCase());
+    out.push(v);
+  }
+  if (out.length > MAX_TAGS) throw new ValidationError(`Too many tags (max ${MAX_TAGS}).`);
+  return out;
 }
 
 /** Remove control characters and collapse whitespace in names. */
@@ -49,13 +81,14 @@ function cleanDeviceName(name) {
  * atomic write (temp file + rename) shortly after every change.
  */
 class Store extends EventEmitter {
-  constructor(dataDir, { maxTextBytes }) {
+  constructor(dataDir, { maxTextBytes, maxNoteBytes = 256 * 1024 }) {
     super();
     this.dir = dataDir;
     this.file = path.join(dataDir, 'db.json');
     this.backup = path.join(dataDir, 'db.json.bak');
     this.filesDir = path.join(dataDir, 'files');
     this.maxTextBytes = maxTextBytes;
+    this.maxNoteBytes = maxNoteBytes;
     this.db = null;
     this.rev = 0;
     this.boot = newId(); // changes on every server start
@@ -271,9 +304,89 @@ class Store extends EventEmitter {
     if (this.db.devices.length !== before) this._persist();
   }
 
+  // ── shared notes ─────────────────────────────────────────────
+  getNote(id) {
+    const n = this.db.notes.find((x) => x.id === id);
+    if (!n) throw new ValidationError('Note not found.', 404);
+    return n;
+  }
+
+  _checkBody(body) {
+    if (body === undefined || body === null) return '';
+    if (typeof body !== 'string') throw new ValidationError('Note body must be text.');
+    if (Buffer.byteLength(body, 'utf8') > this.maxNoteBytes) {
+      throw new ValidationError(`Note is too large (max ${Math.round(this.maxNoteBytes / 1024)} KB).`, 413);
+    }
+    return body;
+  }
+
+  /** @param author {{id, name}|null} */
+  createNote(fields, author) {
+    if (this.db.notes.length >= MAX_NOTES) throw new ValidationError(`Too many shared notes (max ${MAX_NOTES}).`, 409);
+    const title = cleanTitle(fields.title);
+    const body = this._checkBody(fields.body);
+    if (!title && !body.trim()) throw new ValidationError('A note needs a title or some text.');
+    const t = now();
+    const note = {
+      id: `n_${newId()}`,
+      title,
+      body,
+      tags: cleanTags(fields.tags),
+      pinned: Boolean(fields.pinned),
+      locked: Boolean(fields.locked),
+      authorId: author?.id || null,
+      authorName: author?.name || 'Unknown device',
+      version: 1,
+      createdAt: t,
+      updatedAt: t,
+      updatedBy: author?.id || null,
+      updatedByName: author?.name || 'Unknown device',
+    };
+    this.db.notes.push(note);
+    this._changed({ type: 'note', note });
+    return note;
+  }
+
+  /**
+   * Content changes (title/body/tags) require the caller's baseVersion and bump
+   * the version; a stale baseVersion is a 409 carrying the current note.
+   * pinned/locked are metadata: no version check, no version bump.
+   */
+  updateNote(id, patch, author) {
+    const n = this.getNote(id);
+    const content = ['title', 'body', 'tags'].some((k) => patch[k] !== undefined);
+    if (content) {
+      if (!Number.isInteger(patch.baseVersion)) throw new ValidationError('baseVersion is required when changing a note.');
+      if (patch.baseVersion !== n.version) {
+        throw new ValidationError(`This note was changed on ${n.updatedByName}.`, 409, { reason: 'conflict', note: n });
+      }
+    }
+    const next = {
+      title: patch.title !== undefined ? cleanTitle(patch.title) : n.title,
+      body: patch.body !== undefined ? this._checkBody(patch.body) : n.body,
+      tags: patch.tags !== undefined ? cleanTags(patch.tags) : n.tags,
+    };
+    if (content && !next.title && !next.body.trim()) throw new ValidationError('A note needs a title or some text.');
+    Object.assign(n, next);
+    if (patch.pinned !== undefined) n.pinned = Boolean(patch.pinned);
+    if (patch.locked !== undefined) n.locked = Boolean(patch.locked);
+    if (content) n.version += 1;
+    n.updatedAt = now();
+    n.updatedBy = author?.id || null;
+    n.updatedByName = author?.name || 'Unknown device';
+    this._changed({ type: 'note', note: n });
+    return n;
+  }
+
+  deleteNote(id) {
+    this.getNote(id);
+    this.db.notes = this.db.notes.filter((x) => x.id !== id);
+    this._changed({ type: 'note-remove', id });
+  }
+
   // ── queries ──────────────────────────────────────────────────
   snapshot() {
-    return { rev: this.rev, boot: this.boot, clipboards: this.db.clipboards };
+    return { rev: this.rev, boot: this.boot, clipboards: this.db.clipboards, notes: this.db.notes };
   }
 
   get(id) {
