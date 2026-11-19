@@ -9,7 +9,10 @@
     "dev": "node --watch server/index.js",
     "check": "node --check server/index.js && node --check server/store.js && node --check server/auth.js && node --check server/tunnel.js && node --check server/network.js && node --check server/config.js && node --check public/app.js && node --check public/theme.js && node --check public/notes.js && node --check public/private-store.js",
     "test": "node --test test/api.test.mjs test/devices.test.mjs test/migration.test.mjs test/notes.test.mjs test/https.test.mjs",
-    "test:e2e": "node --test test/e2e/notes.e2e.mjs"
+    "test:e2e": "node --test test/e2e/notes.e2e.mjs",
+    "autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-autostart.ps1",
+    "autostart:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-autostart.ps1",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/stop.ps1"
   },
   "keywords": [
     "clipboard",
