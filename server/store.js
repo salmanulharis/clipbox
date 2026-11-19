@@ -15,7 +15,33 @@ const SCHEMA_VERSION = 3;
 /** The group every existing clipboard/note moved into; visible to all devices; can't be deleted. */
 const DEFAULT_GROUP = 'grp_everyone';
 const MAX_GROUPS = 50;
-const ACCESS = ['all', 'members'];
+/**
+ * all: every device sees the group directly.
+ * password: every device sees it (locked); entering its password joins it.
+ * members: hidden from everyone but its members (and the host).
+ */
+const ACCESS = ['all', 'password', 'members'];
+const MIN_GROUP_PASSWORD = 4;
+const MAX_GROUP_PASSWORD = 200;
+
+/** scrypt hash of a group password, as "scrypt$salt$hash" (base64url). */
+function hashGroupPassword(password) {
+  if (typeof password !== 'string' || password.length < MIN_GROUP_PASSWORD || password.length > MAX_GROUP_PASSWORD) {
+    throw new ValidationError(`The group password must be ${MIN_GROUP_PASSWORD}–${MAX_GROUP_PASSWORD} characters.`);
+  }
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password.normalize('NFC'), salt, 32);
+  return `scrypt$${salt.toString('base64url')}$${hash.toString('base64url')}`;
+}
+
+function checkGroupPassword(stored, password) {
+  if (typeof stored !== 'string' || typeof password !== 'string' || password.length > MAX_GROUP_PASSWORD) return false;
+  const [kind, salt, hash] = stored.split('$');
+  if (kind !== 'scrypt' || !salt || !hash) return false;
+  const expected = Buffer.from(hash, 'base64url');
+  const actual = crypto.scryptSync(password.normalize('NFC'), Buffer.from(salt, 'base64url'), expected.length);
+  return crypto.timingSafeEqual(expected, actual);
+}
 const WEB_DEVICE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const ROLES = ['host', 'member', 'viewer'];
 const MAX_NOTES = 2000;
@@ -433,30 +459,43 @@ class Store extends EventEmitter {
     return g;
   }
 
-  createGroup(name, access = 'members') {
+  createGroup(name, access = 'members', password) {
     if (this.db.groups.length >= MAX_GROUPS) throw new ValidationError(`Too many groups (max ${MAX_GROUPS}).`, 409);
+    if (access !== undefined && !ACCESS.includes(access)) throw new ValidationError('Access must be "all", "password" or "members".');
     const g = {
       id: `grp_${newId()}`,
       name: cleanName(name),
-      access: ACCESS.includes(access) ? access : 'members',
+      access: access || 'members',
       members: [],
       createdAt: now(),
     };
+    if (g.access === 'password') {
+      if (!password) throw new ValidationError('Set a password for this group.');
+      g.passwordHash = hashGroupPassword(password);
+    }
     this.db.groups.push(g);
     this._create('General', g.id);
     this._changed({ type: 'groups' });
     return g;
   }
 
-  /** @param members device ids (replaces the list); unknown ids are ignored */
-  updateGroup(id, { name, access, members }) {
+  /**
+   * @param members device ids (replaces the list); unknown ids are ignored
+   * @param password new password (password groups); existing members stay members
+   */
+  updateGroup(id, { name, access, members, password }) {
     const g = this.getGroup(id);
+    if (access !== undefined && !ACCESS.includes(access)) throw new ValidationError('Access must be "all", "password" or "members".');
+    if (id === DEFAULT_GROUP && access !== undefined && access !== 'all') throw new ValidationError('The Everyone group is always visible to every device.');
+    const nextAccess = access ?? g.access;
+    if (nextAccess === 'password' && !password && !g.passwordHash) throw new ValidationError('Set a password for this group.');
+    if (password && nextAccess !== 'password') throw new ValidationError('Only password groups have a password.');
+    // Validate everything before changing anything.
+    const hash = password ? hashGroupPassword(password) : null;
     if (name !== undefined) g.name = cleanName(name);
-    if (access !== undefined) {
-      if (!ACCESS.includes(access)) throw new ValidationError('Access must be "all" or "members".');
-      if (id === DEFAULT_GROUP && access !== 'all') throw new ValidationError('The Everyone group is always visible to every device.');
-      g.access = access;
-    }
+    g.access = nextAccess;
+    if (hash) g.passwordHash = hash;
+    if (g.access !== 'password') delete g.passwordHash;
     if (members !== undefined) {
       if (!Array.isArray(members)) throw new ValidationError('Members must be a list of device ids.');
       const known = new Set(this.db.devices.map((d) => d.id));
@@ -475,6 +514,21 @@ class Store extends EventEmitter {
     return g;
   }
 
+  /** True when [password] is this password group's password. */
+  checkGroupPassword(groupId, password) {
+    const g = this.getGroup(groupId);
+    return g.access === 'password' && checkGroupPassword(g.passwordHash, password);
+  }
+
+  removeMember(groupId, deviceId) {
+    const g = this.getGroup(groupId);
+    if (g.members.includes(deviceId)) {
+      g.members = g.members.filter((m) => m !== deviceId);
+      this._changed({ type: 'groups' });
+    }
+    return g;
+  }
+
   /** Deletes the group with all its clipboards (and files) and shared notes. */
   deleteGroup(id) {
     if (id === DEFAULT_GROUP) throw new ValidationError("The Everyone group can't be deleted.");
@@ -487,10 +541,13 @@ class Store extends EventEmitter {
   }
 
   // ── queries ──────────────────────────────────────────────────
-  /** State for one device: only groups it may see (and their clipboards and notes). */
-  snapshot(canSeeGroup = () => true) {
-    const groups = this.db.groups.filter(canSeeGroup);
-    const ids = new Set(groups.map((g) => g.id));
+  /**
+   * State for one device: the groups it may list, and the clipboards and notes of the groups it
+   * may open (a password group it hasn't joined is listed, but its content isn't included).
+   */
+  snapshot(canListGroup = () => true, canOpenGroup = canListGroup) {
+    const groups = this.db.groups.filter(canListGroup);
+    const ids = new Set(this.db.groups.filter(canOpenGroup).map((g) => g.id));
     return {
       rev: this.rev,
       boot: this.boot,

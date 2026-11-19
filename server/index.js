@@ -183,6 +183,11 @@ function canSeeGroup(ctx, g) {
   return Boolean(ctx.device && g.members.includes(ctx.device.id));
 }
 
+/** Groups shown in a device's list: the ones it can open, plus password groups it could join. */
+function canListGroup(ctx, g) {
+  return canSeeGroup(ctx, g) || g?.access === 'password';
+}
+
 const groupOf = (id) => store.listGroups().find((g) => g.id === id);
 
 /** Not visible = not found (404), so ids in other groups aren't even confirmed to exist. */
@@ -191,7 +196,11 @@ function assertGroup(ctx, groupId) {
 }
 
 function publicGroup(g, ctx) {
-  const out = { id: g.id, name: g.name, access: g.access, createdAt: g.createdAt, isDefault: g.id === DEFAULT_GROUP };
+  // Never includes passwordHash.
+  const out = {
+    id: g.id, name: g.name, access: g.access, createdAt: g.createdAt, isDefault: g.id === DEFAULT_GROUP,
+    locked: !canSeeGroup(ctx, g), // a password group this device hasn't joined
+  };
   if (ctx.role === 'host') out.members = g.members;
   else out.memberCount = g.members.length;
   return out;
@@ -199,7 +208,7 @@ function publicGroup(g, ctx) {
 
 /** Everything this device may see. */
 function snapshotFor(ctx) {
-  const s = store.snapshot((g) => canSeeGroup(ctx, g));
+  const s = store.snapshot((g) => canListGroup(ctx, g), (g) => canSeeGroup(ctx, g));
   return { ...s, groups: s.groups.map((g) => publicGroup(g, ctx)) };
 }
 
@@ -416,7 +425,7 @@ function serveStatic(req, res, pathname) {
 function connectInfo(req, ctx, groupId) {
   const g = groupId ? groupOf(groupId) : null;
   if (groupId && (!g || !canSeeGroup(ctx, g))) throw new ValidationError('Group not found.', 404);
-  if (g && g.access === 'members' && ctx.role !== 'host') throw new ValidationError('Only the host can invite devices to this group.', 403);
+  if (g && g.access !== 'all' && ctx.role !== 'host') throw new ValidationError('Only the host can invite devices to this group.', 403);
   const invite = g && g.id !== DEFAULT_GROUP ? g.id : '';
   const token = auth.createPairToken(invite);
   // The #cb1.<serverId> fragment lets the Android app recognise a ClipBox QR;
@@ -625,16 +634,40 @@ route('DELETE', /^\/api\/notes\/([\w-]+)$/, (req, res, m, url, ctx) => {
 
 // ── groups ───────────────────────────────────────────────────
 route('GET', /^\/api\/groups$/, (req, res, m, url, ctx) => {
-  json(res, 200, { groups: store.listGroups().filter((g) => canSeeGroup(ctx, g)).map((g) => publicGroup(g, ctx)) });
+  json(res, 200, { groups: store.listGroups().filter((g) => canListGroup(ctx, g)).map((g) => publicGroup(g, ctx)) });
 });
 route('POST', /^\/api\/groups$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, 4096);
-  json(res, 201, publicGroup(store.createGroup(body.name, body.access), ctx));
+  json(res, 201, publicGroup(store.createGroup(body.name, body.access, body.password), ctx));
 }, { need: 'host' });
 route('PATCH', /^\/api\/groups\/([\w-]+)$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, 64 * 1024);
-  json(res, 200, publicGroup(store.updateGroup(m[1], { name: body.name, access: body.access, members: body.members }), ctx));
+  const g = store.updateGroup(m[1], { name: body.name, access: body.access, members: body.members, password: body.password });
+  json(res, 200, publicGroup(g, ctx));
 }, { need: 'host' });
+// Join a password group by its password. Viewers may join too (they stay read-only).
+route('POST', /^\/api\/groups\/([\w-]+)\/join$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, 4096);
+  const g = groupOf(m[1]);
+  if (!g || !canListGroup(ctx, g)) throw new ValidationError('Group not found.', 404);
+  if (canSeeGroup(ctx, g)) return json(res, 200, publicGroup(g, ctx)); // already in
+  if (!ctx.device) throw new ValidationError('Open ClipBox in a browser or the app to join groups.');
+  if (auth.rateLimited(req)) return json(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
+  if (!store.checkGroupPassword(g.id, String(body.password ?? ''))) {
+    auth.recordFailure(req);
+    return json(res, 403, { error: 'Wrong group password.', reason: 'group_password' });
+  }
+  store.addMember(g.id, ctx.device.id);
+  json(res, 200, publicGroup(g, ctx));
+}, { need: 'read' });
+// Leave a group this device was invited to or joined.
+route('POST', /^\/api\/groups\/([\w-]+)\/leave$/, (req, res, m, url, ctx) => {
+  const g = groupOf(m[1]);
+  if (!g || !canListGroup(ctx, g)) throw new ValidationError('Group not found.', 404);
+  if (g.access === 'all') throw new ValidationError('Every device is in this group; it can\'t be left.');
+  if (ctx.device) store.removeMember(g.id, ctx.device.id);
+  json(res, 200, { ok: true });
+}, { need: 'read' });
 route('DELETE', /^\/api\/groups\/([\w-]+)$/, (req, res, m) => {
   store.deleteGroup(m[1]);
   json(res, 200, { ok: true });
