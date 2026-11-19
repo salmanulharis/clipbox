@@ -241,25 +241,32 @@ class Auth {
     return { kind, exp: Number(exp), nonce, data };
   }
 
-  /** QR join/pair token. No longer requires a password (signed with the server secret). */
-  createPairToken() {
-    return this._sign('p', PAIR_TTL_MS);
+  /**
+   * QR join/pair token, signed with the server secret. [groupId] makes it an invitation:
+   * the device that uses it is added to that group (the id is covered by the signature).
+   */
+  createPairToken(groupId = '') {
+    return this._sign('p', PAIR_TTL_MS, groupId);
   }
 
-  /** Browser join (/join): reusable within its lifetime so one QR can onboard several phones. */
+  /**
+   * Browser join (/join): reusable within its lifetime so one QR can onboard several phones.
+   * @returns {{groupId: string|null}|null}
+   */
   verifyPairToken(token) {
-    return Boolean(this._verify('p', token));
+    const v = this._verify('p', token);
+    return v ? { groupId: v.data || null } : null;
   }
 
-  /** App pairing: each token can register only one device. */
+  /** App pairing: each token can register only one device. @returns {{groupId: string|null}|null} */
   consumePairToken(token) {
     const v = this._verify('p', token);
-    if (!v) return false;
+    if (!v) return null;
     const now = Date.now();
     for (const [n, exp] of this.usedPairNonces) if (exp < now) this.usedPairNonces.delete(n);
-    if (this.usedPairNonces.has(v.nonce)) return false;
+    if (this.usedPairNonces.has(v.nonce)) return null;
     this.usedPairNonces.set(v.nonce, v.exp);
-    return true;
+    return { groupId: v.data || null };
   }
 
   sessionCookie(req, deviceId) {

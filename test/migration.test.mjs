@@ -22,7 +22,8 @@ test('v1 databases are upgraded in place with a one-time backup', async () => {
     assert.equal(data.clipboards[0].items[0].text, 'kept across upgrade');
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'db.v1-backup.json'), 'utf8')), V1);
     const db = JSON.parse(readFileSync(join(dir, 'db.json'), 'utf8'));
-    assert.equal(db.version, 2);
+    assert.equal(db.version, 3);
+    assert.equal(db.clipboards[0].groupId, 'grp_everyone');
     assert.match(db.serverId, /^srv_/);
     assert.deepEqual(db.notes, []);
     assert.ok(Array.isArray(db.devices));
@@ -42,11 +43,11 @@ test('v1 databases are upgraded in place with a one-time backup', async () => {
   }
 });
 
-test('fresh installs start at v2 without a v1 backup', async () => {
+test('fresh installs start at the current schema without backups', async () => {
   const srv = await startServer({ keepData: true });
   try {
     const db = JSON.parse(readFileSync(join(srv.dataDir, 'db.json'), 'utf8'));
-    assert.equal(db.version, 2);
+    assert.equal(db.version, 3);
     assert.equal(existsSync(join(srv.dataDir, 'db.v1-backup.json')), false);
   } finally {
     await srv.stop();

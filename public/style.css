@@ -638,3 +638,36 @@ body.viewer .board-name { pointer-events: none; }
 .dlg-foot { flex-wrap: wrap; align-items: center; }
 .dlg-foot .link-btn { margin-right: auto; }
 #dlg-pass .dlg-foot .spacer { display: none; }
+
+/* ── groups ──────────────────────────────────────────────── */
+.group-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 10px; margin-left: 8px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer;
+  font-size: 13px; font-weight: 500; max-width: 200px;
+}
+.group-btn:hover { background: var(--bg-hover); }
+.group-btn .ic { width: 15px; height: 15px; color: var(--muted); flex: none; }
+.group-btn #group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#group-wrap .menu { left: 0; right: auto; min-width: 220px; }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.connect-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+.select-input {
+  flex: 1; height: 34px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 14px;
+}
+.group-list { list-style: none; margin: 0 0 12px; padding: 0; max-height: min(55dvh, 480px); overflow-y: auto; }
+.group-row { padding: 10px 4px; border-bottom: 1px solid var(--border); }
+.group-head { display: flex; align-items: center; gap: 10px; }
+.group-head > .ic { color: var(--muted); }
+.group-main { flex: 1; min-width: 0; }
+.member-list { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 2px 28px; max-height: 140px; overflow-y: auto; }
+.member { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.member input { accent-color: var(--accent); }
+.group-create { display: flex; gap: 8px; }
+.group-create .text-input { margin: 0; }
+@media (max-width: 600px) {
+  .group-btn #group-name { max-width: 80px; }
+  .group-btn { margin-left: 4px; }
+  .group-head { flex-wrap: wrap; }
+  .member-list { margin-left: 0; }
+}

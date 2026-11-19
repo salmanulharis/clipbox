@@ -21,6 +21,8 @@ data class OutboxOp(
     val tags: List<String>? = null,
     val clipboardId: String? = null,
     val text: String? = null,
+    /** Group a note created offline belongs to (null: the server's default group). */
+    val groupId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     enum class Kind { NOTE_CREATE, NOTE_UPDATE, NOTE_DELETE, CLIP_ADD }
@@ -45,9 +47,9 @@ class Outbox(private val store: EncryptedFileStore) {
 
     /** New note created offline; returns its temporary local id. */
     @Synchronized
-    fun createNote(title: String, body: String, tags: List<String>): String {
+    fun createNote(title: String, body: String, tags: List<String>, groupId: String? = null): String {
         val localId = LOCAL_PREFIX + UUID.randomUUID().toString().replace("-", "").take(16)
-        commit(_ops.value + OutboxOp(newOpId(), OutboxOp.Kind.NOTE_CREATE, noteId = localId, title = title, body = body, tags = tags))
+        commit(_ops.value + OutboxOp(newOpId(), OutboxOp.Kind.NOTE_CREATE, noteId = localId, title = title, body = body, tags = tags, groupId = groupId))
         return localId
     }
 
@@ -106,7 +108,7 @@ class Outbox(private val store: EncryptedFileStore) {
         .put("baseVersion", o.baseVersion ?: JSONObject.NULL).put("title", o.title ?: JSONObject.NULL)
         .put("body", o.body ?: JSONObject.NULL).put("tags", o.tags?.let { JSONArray(it) } ?: JSONObject.NULL)
         .put("clipboardId", o.clipboardId ?: JSONObject.NULL).put("text", o.text ?: JSONObject.NULL)
-        .put("createdAt", o.createdAt)
+        .put("groupId", o.groupId ?: JSONObject.NULL).put("createdAt", o.createdAt)
 
     private fun fromJson(o: JSONObject): OutboxOp {
         fun str(k: String) = if (o.has(k) && !o.isNull(k)) o.getString(k) else null
@@ -121,6 +123,7 @@ class Outbox(private val store: EncryptedFileStore) {
             tags = tags?.let { a -> List(a.length()) { a.getString(it) } },
             clipboardId = str("clipboardId"),
             text = str("text"),
+            groupId = str("groupId"),
             createdAt = o.optLong("createdAt"),
         )
     }

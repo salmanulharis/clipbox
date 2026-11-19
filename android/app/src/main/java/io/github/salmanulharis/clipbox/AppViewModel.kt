@@ -16,10 +16,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.salmanulharis.clipbox.core.model.ClipItem
+import io.github.salmanulharis.clipbox.core.model.Clipboard
+import io.github.salmanulharis.clipbox.core.model.Group
 import io.github.salmanulharis.clipbox.core.model.NoteText
 import io.github.salmanulharis.clipbox.core.model.PrivateNote
 import io.github.salmanulharis.clipbox.core.model.Role
 import io.github.salmanulharis.clipbox.core.model.SharedNote
+import io.github.salmanulharis.clipbox.core.model.Snapshot
 import io.github.salmanulharis.clipbox.network.ApiException
 import io.github.salmanulharis.clipbox.network.Connection
 import io.github.salmanulharis.clipbox.network.ServerLink
@@ -57,7 +60,11 @@ sealed interface ConnectOutcome {
 }
 
 /** State of the note editor (one open note at a time, private or shared). */
-class EditorState(val scope: Scope, id: String?, var version: Int?, title: String, tags: String, body: String) {
+class EditorState(
+    val scope: Scope, id: String?, var version: Int?, title: String, tags: String, body: String,
+    /** Group a new shared note is created in (fixed when the editor opens). */
+    val groupId: String = Group.DEFAULT_ID,
+) {
     var id by mutableStateOf(id)
     var title by mutableStateOf(title)
     var tags by mutableStateOf(tags)
@@ -143,6 +150,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) { runCatching { cleanShareCache() } }
             activeProfile?.let(g.sync::start)
             launch { g.sync.events.collect(::onSyncEvent) }
+            // Each server remembers which of its groups was open last.
+            launch { activeId.collect { id -> selectedGroupId = id?.let { g.prefs.getString(groupKey(it), null) } ?: Group.DEFAULT_ID } }
             snapshot.collect { onSnapshot() }
         }
     }
@@ -235,6 +244,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val old = g.profiles.profiles.value.firstOrNull { it.serverId == pair.serverId }
+        // A group invitation opens that group (saved before the profile becomes active).
+        pair.groupId?.let { g.prefs.edit().putString(groupKey(pair.serverId), it).apply(); selectedGroupId = it }
         val profile = ServerProfile(
             serverId = pair.serverId,
             serverName = pair.serverName,
@@ -295,6 +306,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refresh() = g.sync.refresh()
+
+    // ── groups ───────────────────────────────────────────────────
+    /** The group picked in the top bar; see [currentGroup] for the one actually shown. */
+    var selectedGroupId by mutableStateOf(Group.DEFAULT_ID); private set
+
+    private fun groupKey(serverId: String) = "group.$serverId"
+
+    /** The open group: the selection while this device can still see it, otherwise the default group. */
+    fun currentGroup(s: Snapshot? = snapshot.value): Group {
+        val groups = s?.groups.orEmpty()
+        return groups.firstOrNull { it.id == selectedGroupId } ?: groups.firstOrNull { it.isDefault } ?: groups.firstOrNull() ?: Group.DEFAULT
+    }
+
+    fun groupClipboards(s: Snapshot? = snapshot.value): List<Clipboard> {
+        val id = currentGroup(s).id
+        return s?.clipboards.orEmpty().filter { it.groupId == id }
+    }
+
+    fun groupNotes(s: Snapshot? = snapshot.value): List<SharedNote> {
+        val id = currentGroup(s).id
+        return s?.notes.orEmpty().filter { it.groupId == id }
+    }
+
+    fun groupById(id: String): Group = snapshot.value?.groups?.firstOrNull { it.id == id } ?: currentGroup()
+
+    fun selectGroup(id: String) {
+        if (id == selectedGroupId) return
+        selectedGroupId = id
+        activeClipboardId = null
+        activeId.value?.let { g.prefs.edit().putString(groupKey(it), id).apply() }
+    }
+
+    /** Who sees shared things in the open group, e.g. `members of "Family"`. */
+    fun audience(group: Group = currentGroup()): String {
+        val server = activeProfile?.serverName ?: "the server"
+        return when {
+            group.isDefault -> "everyone on $server"
+            group.membersOnly -> "members of \"${group.name}\""
+            else -> "everyone in \"${group.name}\""
+        }
+    }
 
     // ── clipboards ───────────────────────────────────────────────
     private val clipboardManager get() = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -357,10 +409,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Create a shared note online, or queue it offline. Returns its id (a temporary local id when queued). */
-    private suspend fun createShared(title: String, body: String, tags: List<String>): String? {
+    private suspend fun createShared(title: String, body: String, tags: List<String>, groupId: String = currentGroup().id): String? {
         if (g.sync.isOnline) {
             try {
-                val n = g.sync.api.createNote(g.sync.base(), g.sync.token!!, title, body, tags)
+                val n = g.sync.api.createNote(g.sync.base(), g.sync.token!!, title, body, tags, groupId)
                 g.sync.applyNote(n)
                 return n.id
             } catch (e: ApiException) {
@@ -370,7 +422,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        return runCatching { withContext(Dispatchers.IO) { g.sync.queueNoteCreate(title, body, tags) } }
+        return runCatching { withContext(Dispatchers.IO) { g.sync.queueNoteCreate(title, body, tags, groupId) } }
             .onFailure { msg(it.message ?: "Couldn't save it for later.", error = true) }.getOrNull()
     }
 
@@ -386,7 +438,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun createClipboard(name: String) {
         viewModelScope.launch {
-            server { b, t -> g.sync.api.createClipboard(b, t, name) }?.let {
+            val groupId = currentGroup().id
+            server { b, t -> g.sync.api.createClipboard(b, t, name, groupId) }?.let {
                 g.sync.applyClipboard(it)
                 activeClipboardId = it.id
             }
@@ -664,8 +717,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         editor?.let { e -> if (e.dirty) viewModelScope.launch { save(e) } }
         val e = when (scope) {
             Scope.PRIVATE -> g.privateNotes.get(id ?: "")?.let { EditorState(scope, it.id, null, it.title, it.tags.joinToString(", "), it.body) }
-            Scope.SHARED -> snapshot.value?.notes?.firstOrNull { it.id == id }?.let { EditorState(scope, it.id, it.version, it.title, it.tags.joinToString(", "), it.body) }
-        } ?: EditorState(scope, null, null, "", "", prefillBody)
+            Scope.SHARED -> snapshot.value?.notes?.firstOrNull { it.id == id }?.let { EditorState(scope, it.id, it.version, it.title, it.tags.joinToString(", "), it.body, it.groupId) }
+        } ?: EditorState(scope, null, null, "", "", prefillBody, currentGroup().id)
         editor = e
         screen = Screen.Editor
         if (prefillBody.isNotEmpty()) onEditorChange(e)
@@ -731,7 +784,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val token = g.sync.token ?: throw ApiException(0, "Not connected")
             val base = g.sync.base()
-            val n = if (e.id == null) g.sync.api.createNote(base, token, title, body, tags)
+            val n = if (e.id == null) g.sync.api.createNote(base, token, title, body, tags, e.groupId)
             else g.sync.api.updateNote(base, token, e.id!!, title = title, body = body, tags = tags, baseVersion = e.version)
             e.id = n.id
             e.version = n.version
@@ -768,7 +821,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val id = e.id
             val newId = withContext(Dispatchers.IO) {
-                if (id == null) g.sync.queueNoteCreate(title, body, tags)
+                if (id == null) g.sync.queueNoteCreate(title, body, tags, e.groupId)
                 else { g.sync.queueNoteUpdate(id, e.version, title, body, tags); id }
             } ?: throw IllegalStateException("Connect to a server first.")
             e.id = newId

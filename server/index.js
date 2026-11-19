@@ -6,7 +6,7 @@ const path = require('path');
 const QRCode = require('qrcode');
 
 const config = require('./config');
-const { Store, ValidationError, SchemaError, newId } = require('./store');
+const { Store, ValidationError, SchemaError, newId, DEFAULT_GROUP } = require('./store');
 const { Auth, PAIR_TTL_MS, deviceNameFromUA } = require('./auth');
 const { version: VERSION } = require('../package.json');
 const { localUrls } = require('./network');
@@ -167,6 +167,52 @@ function deviceForSignIn(req, role) {
   return store.createDevice({ name: deviceNameFromUA(req.headers['user-agent']), platform: 'web', role });
 }
 
+// ── groups: who can see what ─────────────────────────────────
+/** Hosts see every group; "all" groups are visible to every device; others only to members. */
+function canSeeGroup(ctx, g) {
+  if (!g) return false;
+  if (ctx.role === 'host' || g.access === 'all') return true;
+  return Boolean(ctx.device && g.members.includes(ctx.device.id));
+}
+
+const groupOf = (id) => store.listGroups().find((g) => g.id === id);
+
+/** Not visible = not found (404), so ids in other groups aren't even confirmed to exist. */
+function assertGroup(ctx, groupId) {
+  if (!canSeeGroup(ctx, groupOf(groupId))) throw new ValidationError('Not found.', 404);
+}
+
+function publicGroup(g, ctx) {
+  const out = { id: g.id, name: g.name, access: g.access, createdAt: g.createdAt, isDefault: g.id === DEFAULT_GROUP };
+  if (ctx.role === 'host') out.members = g.members;
+  else out.memberCount = g.members.length;
+  return out;
+}
+
+/** Everything this device may see. */
+function snapshotFor(ctx) {
+  const s = store.snapshot((g) => canSeeGroup(ctx, g));
+  return { ...s, groups: s.groups.map((g) => publicGroup(g, ctx)) };
+}
+
+/**
+ * A live event as one device should receive it: full for groups it can see; for other
+ * groups only an empty "skip" (keeps the revision sequence intact, reveals nothing);
+ * group changes just tell clients to reload.
+ */
+function eventFor(ctx, event, groupOfClipboard) {
+  let data;
+  if (event.type === 'groups') {
+    data = { type: 'groups', rev: event.rev, boot: event.boot };
+  } else if (event.groupId && !canSeeGroup(ctx, groupOf(event.groupId))) {
+    data = { type: 'skip', rev: event.rev, boot: event.boot };
+  } else {
+    const order = event.order.filter((id) => canSeeGroup(ctx, groupOf(groupOfClipboard.get(id))));
+    data = { ...event, order };
+  }
+  return `id: ${event.rev}\nevent: change\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
 function knownUrls() {
   const urls = localUrls(config).filter((u) => !u.virtual).map((u) => ({ kind: 'local', url: u.url }));
   if (tunnel.url) urls.push({ kind: 'public', url: tunnel.url });
@@ -174,12 +220,12 @@ function knownUrls() {
 }
 
 // ── live sync (Server-Sent Events + long-poll fallback) ─────
-const sseClients = new Map(); // res -> deviceId
+const sseClients = new Map(); // res -> request context (device, role)
 const waiters = new Set();
 
 store.on('change', (event) => {
-  const payload = `id: ${event.rev}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const res of sseClients.keys()) res.write(payload);
+  const groupOfClipboard = new Map(store.snapshot().clipboards.map((c) => [c.id, c.groupId]));
+  for (const [res, ctx] of sseClients) res.write(eventFor(ctx, event, groupOfClipboard));
   for (const w of waiters) w();
 });
 
@@ -198,8 +244,8 @@ setInterval(() => store.pruneDevices(), 24 * 60 * 60 * 1000).unref();
 
 /** Close live connections of a revoked/removed device so it re-authenticates. */
 function kickDevice(deviceId) {
-  for (const [res, id] of sseClients) {
-    if (id === deviceId) {
+  for (const [res, ctx] of sseClients) {
+    if (ctx.device?.id === deviceId) {
       sseClients.delete(res);
       res.end();
     }
@@ -209,7 +255,13 @@ function kickDevice(deviceId) {
 /** Tell a device its own role/name changed. */
 function notifyDevice(deviceId, payload) {
   const msg = `event: me\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const [res, id] of sseClients) if (id === deviceId) res.write(msg);
+  for (const [res, ctx] of sseClients) {
+    if (ctx.device?.id !== deviceId) continue;
+    // Keep the stored role current so live events are filtered correctly.
+    if (payload.role && ctx.role !== 'host') ctx.role = payload.role;
+    else if (payload.role === 'host') ctx.role = 'host';
+    res.write(msg);
+  }
 }
 
 function handleEvents(req, res, ctx) {
@@ -223,13 +275,13 @@ function handleEvents(req, res, ctx) {
   // Padding helps proxies that buffer small responses flush immediately.
   res.write(`:${' '.repeat(2048)}\n\n`);
   res.write(`event: hello\ndata: ${JSON.stringify({ rev: store.rev, boot: store.boot })}\n\n`);
-  sseClients.set(res, ctx.device?.id || null);
+  sseClients.set(res, ctx);
   req.on('close', () => sseClients.delete(res));
 }
 
-function handleSync(req, res, url) {
+function handleSync(req, res, url, ctx) {
   const since = Number(url.searchParams.get('rev'));
-  const reply = () => json(res, 200, store.snapshot());
+  const reply = () => json(res, 200, snapshotFor(ctx));
   if (since !== store.rev || url.searchParams.get('boot') !== store.boot) return reply();
   let done = false;
   const finish = () => {
@@ -302,9 +354,11 @@ function handleUpload(req, res, clipboardId) {
   req.pipe(out);
 }
 
-function serveFile(req, res, itemId, download) {
+function serveFile(req, res, itemId, download, ctx) {
   const found = store.findItem(itemId);
-  if (!found || found.item.type !== 'file') return json(res, 404, { error: 'File not found.' });
+  if (!found || found.item.type !== 'file' || !canSeeGroup(ctx, groupOf(found.clipboard.groupId))) {
+    return json(res, 404, { error: 'File not found.' });
+  }
   const { item } = found;
   const file = store.filePath(item.id);
   fs.stat(file, (err, st) => {
@@ -347,8 +401,16 @@ function serveStatic(req, res, pathname) {
 }
 
 // ── connection info / QR ─────────────────────────────────────
-function connectInfo(req) {
-  const token = auth.createPairToken();
+/**
+ * QR codes / links for adding a device. With [groupId] (not the default group) the link is an
+ * invitation: the device that uses it joins that group. Invites to invite-only groups are host-only.
+ */
+function connectInfo(req, ctx, groupId) {
+  const g = groupId ? groupOf(groupId) : null;
+  if (groupId && (!g || !canSeeGroup(ctx, g))) throw new ValidationError('Group not found.', 404);
+  if (g && g.access === 'members' && ctx.role !== 'host') throw new ValidationError('Only the host can invite devices to this group.', 403);
+  const invite = g && g.id !== DEFAULT_GROUP ? g.id : '';
+  const token = auth.createPairToken(invite);
   // The #cb1.<serverId> fragment lets the Android app recognise a ClipBox QR;
   // browsers ignore fragments, so camera-scanned links behave exactly as before.
   // With HTTPS, the certificate fingerprint lets the app pin a self-signed LAN certificate.
@@ -358,7 +420,8 @@ function connectInfo(req) {
     kind: 'local',
     label: u.virtual ? `${u.label} (virtual)` : u.label,
     url: u.url,
-    link: config.authMode === 'all' ? withToken(u.url) : `${u.url}/${fragment}`,
+    // Invitations always need the token (it carries the group); otherwise LAN links stay token-free.
+    link: config.authMode === 'all' || invite ? withToken(u.url) : `${u.url}/${fragment}`,
   }));
   if (tunnel.url) {
     urls.unshift({
@@ -369,7 +432,10 @@ function connectInfo(req) {
       blocked: !auth.passwordSet,
     });
   }
-  return { urls, token, fragment, tokenMinutes: PAIR_TTL_MS / 60000, tunnel: tunnel.info() };
+  return {
+    urls, token, fragment, tokenMinutes: PAIR_TTL_MS / 60000, tunnel: tunnel.info(),
+    group: g ? { id: g.id, name: g.name, access: g.access } : null,
+  };
 }
 
 // ── router ───────────────────────────────────────────────────
@@ -384,7 +450,8 @@ route('GET', /^\/api\/session$/, (req, res) => {
 route('GET', /^\/api\/info$/, (req, res) => {
   json(res, 200, {
     app: 'clipbox',
-    apiVersion: 2,
+    apiVersion: 3,
+    features: ['groups', 'notes', 'devices'],
     version: VERSION,
     serverId: store.serverId,
     serverName: store.serverName,
@@ -410,8 +477,10 @@ route('POST', /^\/api\/logout$/, (req, res) => {
 
 route('GET', /^\/join$/, (req, res, m, url) => {
   const token = url.searchParams.get('t');
-  if (auth.verifyPairToken(token)) {
+  const invite = auth.verifyPairToken(token);
+  if (invite) {
     const device = deviceForSignIn(req, 'member');
+    if (invite.groupId && groupOf(invite.groupId)) store.addMember(invite.groupId, device.id);
     return send(res, 302, '', {
       Location: '/',
       'Set-Cookie': [auth.sessionCookie(req, device.id), auth.deviceCookie(req, device.id)],
@@ -425,11 +494,11 @@ route('GET', /^\/api\/health$/, (req, res) => json(res, 200, { ok: true }), { op
 
 route('GET', /^\/api\/state$/, (req, res, m, url, ctx) => {
   const cookies = ensureWebDevice(req, ctx);
-  json(res, 200, { ...store.snapshot(), server: serverInfo(req), me: me(ctx) }, cookies.length ? { 'Set-Cookie': cookies } : {});
+  json(res, 200, { ...snapshotFor(ctx), server: serverInfo(req), me: me(ctx) }, cookies.length ? { 'Set-Cookie': cookies } : {});
 });
 route('GET', /^\/api\/events$/, (req, res, m, url, ctx) => handleEvents(req, res, ctx));
-route('GET', /^\/api\/sync$/, (req, res, m, url) => handleSync(req, res, url));
-route('GET', /^\/api\/connect$/, (req, res) => json(res, 200, connectInfo(req)));
+route('GET', /^\/api\/sync$/, (req, res, m, url, ctx) => handleSync(req, res, url, ctx));
+route('GET', /^\/api\/connect$/, (req, res, m, url, ctx) => json(res, 200, connectInfo(req, ctx, url.searchParams.get('group'))));
 
 route('GET', /^\/api\/qr$/, async (req, res, m, url) => {
   const text = url.searchParams.get('text') || '';
@@ -443,8 +512,10 @@ route('POST', /^\/api\/devices\/pair$/, async (req, res) => {
   const body = await readJson(req, 4096);
   if (auth.rateLimited(req)) return json(res, 429, { error: 'Too many attempts. Try again in a few minutes.' });
   let role;
+  let invite = null;
   if (body.pairToken) {
-    if (!auth.consumePairToken(String(body.pairToken))) {
+    invite = auth.consumePairToken(String(body.pairToken));
+    if (!invite) {
       auth.recordFailure(req);
       return json(res, 401, { error: 'This QR code has expired or was already used. Show a new one.', reason: 'pair_expired' });
     }
@@ -463,8 +534,11 @@ route('POST', /^\/api\/devices\/pair$/, async (req, res) => {
   const { token, hash } = auth.newDeviceToken();
   const platform = ['android', 'ios', 'cli', 'other'].includes(body.platform) ? body.platform : 'other';
   const device = store.createDevice({ name: body.name || (platform === 'android' ? 'Android device' : 'Device'), platform, role, tokenHash: hash });
+  const invitedTo = invite?.groupId && groupOf(invite.groupId) ? invite.groupId : null;
+  if (invitedTo) store.addMember(invitedTo, device.id);
   json(res, 201, {
     deviceId: device.id,
+    groupId: invitedTo, // the group this invitation was for, so the app can open it
     deviceToken: token,
     role: device.role,
     serverId: store.serverId,
@@ -515,12 +589,15 @@ function assertCanModify(note, ctx) {
 
 route('POST', /^\/api\/notes$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, config.maxNoteBytes * 2 + 8192);
-  json(res, 201, store.createNote(body, author(ctx)));
+  const groupId = typeof body.groupId === 'string' ? body.groupId : DEFAULT_GROUP;
+  assertGroup(ctx, groupId);
+  json(res, 201, store.createNote(body, author(ctx), groupId));
 });
 
 route('PATCH', /^\/api\/notes\/([\w-]+)$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, config.maxNoteBytes * 2 + 8192);
   const note = store.getNote(m[1]);
+  assertGroup(ctx, note.groupId);
   assertCanModify(note, ctx);
   if (body.locked !== undefined && Boolean(body.locked) !== note.locked && ctx.role !== 'host' && note.authorId !== ctx.device?.id) {
     throw new ValidationError('Only the author or the host can lock or unlock a note.', 403, { reason: 'locked' });
@@ -529,39 +606,76 @@ route('PATCH', /^\/api\/notes\/([\w-]+)$/, async (req, res, m, url, ctx) => {
 });
 
 route('DELETE', /^\/api\/notes\/([\w-]+)$/, (req, res, m, url, ctx) => {
-  assertCanModify(store.getNote(m[1]), ctx);
+  const note = store.getNote(m[1]);
+  assertGroup(ctx, note.groupId);
+  assertCanModify(note, ctx);
   store.deleteNote(m[1]);
   json(res, 200, { ok: true });
 });
 
-// ── clipboards ───────────────────────────────────────────────
-route('POST', /^\/api\/clipboards$/, async (req, res) => {
-  const body = await readJson(req, 4096);
-  json(res, 201, store.createClipboard(body.name));
+// ── groups ───────────────────────────────────────────────────
+route('GET', /^\/api\/groups$/, (req, res, m, url, ctx) => {
+  json(res, 200, { groups: store.listGroups().filter((g) => canSeeGroup(ctx, g)).map((g) => publicGroup(g, ctx)) });
 });
-route('PATCH', /^\/api\/clipboards\/([\w-]+)$/, async (req, res, m) => {
+route('POST', /^\/api\/groups$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, 4096);
+  json(res, 201, publicGroup(store.createGroup(body.name, body.access), ctx));
+}, { need: 'host' });
+route('PATCH', /^\/api\/groups\/([\w-]+)$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, 64 * 1024);
+  json(res, 200, publicGroup(store.updateGroup(m[1], { name: body.name, access: body.access, members: body.members }), ctx));
+}, { need: 'host' });
+route('DELETE', /^\/api\/groups\/([\w-]+)$/, (req, res, m) => {
+  store.deleteGroup(m[1]);
+  json(res, 200, { ok: true });
+}, { need: 'host' });
+
+// ── clipboards (every route checks the clipboard's group) ───
+const visibleClipboard = (ctx, id) => {
+  const c = store.get(id);
+  assertGroup(ctx, c.groupId);
+  return c;
+};
+route('POST', /^\/api\/clipboards$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, 4096);
+  const groupId = typeof body.groupId === 'string' ? body.groupId : DEFAULT_GROUP;
+  assertGroup(ctx, groupId);
+  json(res, 201, store.createClipboard(body.name, groupId));
+});
+route('PATCH', /^\/api\/clipboards\/([\w-]+)$/, async (req, res, m, url, ctx) => {
+  const body = await readJson(req, 4096);
+  visibleClipboard(ctx, m[1]);
   json(res, 200, store.renameClipboard(m[1], body.name));
 });
-route('DELETE', /^\/api\/clipboards\/([\w-]+)$/, (req, res, m) => {
+route('DELETE', /^\/api\/clipboards\/([\w-]+)$/, (req, res, m, url, ctx) => {
+  visibleClipboard(ctx, m[1]);
   store.deleteClipboard(m[1]);
   json(res, 200, { ok: true });
 });
-route('POST', /^\/api\/clipboards\/([\w-]+)\/clear$/, (req, res, m) => json(res, 200, store.clearClipboard(m[1])));
-route('POST', /^\/api\/clipboards\/([\w-]+)\/items$/, async (req, res, m) => {
+route('POST', /^\/api\/clipboards\/([\w-]+)\/clear$/, (req, res, m, url, ctx) => {
+  visibleClipboard(ctx, m[1]);
+  json(res, 200, store.clearClipboard(m[1]));
+});
+route('POST', /^\/api\/clipboards\/([\w-]+)\/items$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, config.maxTextBytes * 2 + 1024);
+  visibleClipboard(ctx, m[1]);
   json(res, 201, store.addText(m[1], body.text));
 });
-route('POST', /^\/api\/clipboards\/([\w-]+)\/files$/, (req, res, m) => handleUpload(req, res, m[1]));
-route('PATCH', /^\/api\/clipboards\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m) => {
+route('POST', /^\/api\/clipboards\/([\w-]+)\/files$/, (req, res, m, url, ctx) => {
+  visibleClipboard(ctx, m[1]);
+  handleUpload(req, res, m[1]);
+});
+route('PATCH', /^\/api\/clipboards\/([\w-]+)\/items\/([\w-]+)$/, async (req, res, m, url, ctx) => {
   const body = await readJson(req, config.maxTextBytes * 2 + 1024);
+  visibleClipboard(ctx, m[1]);
   json(res, 200, store.updateItem(m[1], m[2], body.text));
 });
-route('DELETE', /^\/api\/clipboards\/([\w-]+)\/items\/([\w-]+)$/, (req, res, m) => {
+route('DELETE', /^\/api\/clipboards\/([\w-]+)\/items\/([\w-]+)$/, (req, res, m, url, ctx) => {
+  visibleClipboard(ctx, m[1]);
   store.deleteItem(m[1], m[2]);
   json(res, 200, { ok: true });
 });
-route('GET', /^\/files\/([\w-]+)$/, (req, res, m, url) => serveFile(req, res, m[1], url.searchParams.has('download')));
+route('GET', /^\/files\/([\w-]+)$/, (req, res, m, url, ctx) => serveFile(req, res, m[1], url.searchParams.has('download'), ctx));
 
 async function handler(req, res) {
   let url;

@@ -66,7 +66,7 @@ fun ClipboardsTab(vm: AppViewModel) {
         ConnectPrompt(vm)
         return
     }
-    val clipboards = snapshot?.clipboards.orEmpty()
+    val clipboards = vm.groupClipboards(snapshot)
     val active = clipboards.firstOrNull { it.id == vm.activeClipboardId } ?: clipboards.firstOrNull()
     val online = connection is Connection.Online
     val canWrite = online && vm.role.canWrite

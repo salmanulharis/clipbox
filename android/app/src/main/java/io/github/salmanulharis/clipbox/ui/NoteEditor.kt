@@ -149,7 +149,7 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
             when {
                 sharedNote != null -> "Created by ${sharedNote.authorName} ${timeAgo(sharedNote.createdAt)} · last edited by ${sharedNote.updatedByName} ${timeAgo(sharedNote.updatedAt)}"
                 privateNote != null -> "Encrypted on this phone · edited ${timeAgo(privateNote.updatedAt)}"
-                shared -> "Will be shared with everyone on ${vm.activeProfile?.serverName}."
+                shared -> "Will be shared with ${vm.audience(vm.groupById(e.groupId))}."
                 else -> "Saved automatically, encrypted on this phone."
             },
             style = MaterialTheme.typography.bodySmall, color = p.muted, modifier = Modifier.padding(16.dp, 8.dp),
@@ -167,12 +167,12 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
     when (dialog) {
         "share" -> ConfirmDialog(
             "Share this note?",
-            "A copy will be visible to everyone connected to ${vm.activeProfile?.serverName}. Your private note stays private.",
+            "A copy will be visible to ${vm.audience()}. Your private note stays private.",
             "Share", onDismiss = { dialog = null },
         ) { vm.editorCopyTo(e) }
         "delete" -> ConfirmDialog(
             "Delete for everyone?",
-            "This shared note will be removed from every device connected to ${vm.activeProfile?.serverName}.",
+            "This shared note will be removed for ${vm.audience(vm.groupById(sharedNote?.groupId ?: e.groupId))}.",
             "Delete", danger = true, onDismiss = { dialog = null },
         ) { vm.editorDelete(e) }
     }

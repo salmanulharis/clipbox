@@ -24,7 +24,8 @@ test('/api/info identifies the server without exposing data', async () => {
   const { status, data } = await api('GET', '/api/info', undefined, REMOTE);
   assert.equal(status, 200);
   assert.equal(data.app, 'clipbox');
-  assert.equal(data.apiVersion, 2);
+  assert.equal(data.apiVersion, 3);
+  assert.ok(data.features.includes('groups'));
   assert.match(data.serverId, /^srv_/);
   assert.ok(data.serverName);
   assert.equal(data.authRequired, true);

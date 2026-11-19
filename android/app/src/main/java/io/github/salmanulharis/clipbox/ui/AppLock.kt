@@ -8,6 +8,7 @@ import android.hardware.biometrics.BiometricPrompt
 import android.os.Build
 import android.os.CancellationSignal
 import android.view.WindowManager
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -69,7 +70,7 @@ fun rememberAuthenticator(): (title: String, onResult: (Boolean) -> Unit) -> Uni
 /** While shown, blocks screenshots and hides the screen in the recent-apps switcher. */
 @Composable
 fun SecureScreen(enabled: Boolean) {
-    val activity = LocalContext.current as? Activity ?: return
+    val activity = LocalActivity.current ?: return
     DisposableEffect(enabled) {
         if (enabled) activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         onDispose { if (enabled) activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }

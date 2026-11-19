@@ -19,10 +19,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +43,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -176,9 +181,61 @@ private fun TopBar(vm: AppViewModel) {
                     Text(label, style = MaterialTheme.typography.bodySmall, color = p.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+            if (activeId != null) GroupSwitcher(vm)
             IconAction(Ic.Scan, "Scan a QR code to connect", tint = p.text) { vm.screen = Screen.Scanner }
         }
         HorizontalDivider(color = p.border)
+    }
+}
+
+/**
+ * Group picker. Hidden while the server only has its default group (or is too old for groups),
+ * so single-group setups look exactly as before.
+ */
+@Composable
+private fun GroupSwitcher(vm: AppViewModel) {
+    val p = LocalPalette.current
+    val snapshot by vm.snapshot.collectAsStateWithLifecycle()
+    val groups = snapshot?.groups.orEmpty()
+    if (groups.size < 2) return
+    val current = vm.currentGroup(snapshot)
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            Modifier.clip(RoundedCornerShape(8.dp)).clickable { open = true }.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(if (current.membersOnly) Ic.Lock else Ic.Users, null, Modifier.size(16.dp), tint = p.accent)
+            Spacer(Modifier.width(6.dp))
+            Text(current.name, style = MaterialTheme.typography.labelLarge, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp))
+            Icon(Ic.ChevronDown, "Switch group", Modifier.size(16.dp), tint = p.muted)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            groups.forEach { g ->
+                val clips = snapshot?.clipboards.orEmpty().count { it.groupId == g.id }
+                val notes = snapshot?.notes.orEmpty().count { it.groupId == g.id }
+                val access = if (g.membersOnly) "Invited only" else "Everyone"
+                val clipLabel = if (clips == 1) "1 clipboard" else "$clips clipboards"
+                val noteLabel = if (notes == 1) "1 note" else "$notes notes"
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(g.name, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("$access · $clipLabel · $noteLabel", style = MaterialTheme.typography.bodySmall, color = p.muted)
+                        }
+                    },
+                    leadingIcon = { Icon(if (g.membersOnly) Ic.Lock else Ic.Users, null, Modifier.size(18.dp), tint = if (g.id == current.id) p.accent else p.muted) },
+                    trailingIcon = if (g.id == current.id) ({ Icon(Ic.Check, null, Modifier.size(18.dp), tint = p.accent) }) else null,
+                    onClick = {
+                        open = false
+                        if (g.id != current.id) {
+                            vm.selectGroup(g.id)
+                            vm.msg("Switched to ${g.name}")
+                        }
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -242,11 +299,11 @@ private fun ShareTargetDialog(vm: AppViewModel, text: String) {
                     if (vm.privateLocked) authenticate("Unlock private notes") { ok -> if (ok) { vm.unlockPrivate(); open() } } else open()
                 }
                 if (canShare) {
-                    ShareOption(Ic.Users, "New shared note", "Visible to everyone on ${vm.activeProfile?.serverName}") {
+                    ShareOption(Ic.Users, "New shared note", "Visible to ${vm.audience()}") {
                         done(); vm.tab = Tab.NOTES; vm.notesScope = Scope.SHARED; vm.openEditor(Scope.SHARED, null, text)
                     }
                     snapshot?.clipboards?.forEach { cb ->
-                        ShareOption(Ic.Clipboard, cb.name, "Clipboard on ${vm.activeProfile?.serverName}") {
+                        ShareOption(Ic.Clipboard, cb.name, clipboardPlace(vm, cb.groupId)) {
                             done(); vm.addText(cb.id, text) { ok -> if (ok) vm.msg("Added to ${cb.name}") }
                         }
                     }
@@ -278,10 +335,11 @@ private fun ShareFilesDialog(vm: AppViewModel, files: List<android.net.Uri>) {
                     !vm.role.canWrite -> Text("This phone is view-only on ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
                     !online -> Text("Files can only be added while you're connected to ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodyMedium, color = p.muted)
                     else -> snapshot?.clipboards?.forEach { cb ->
-                        ShareOption(Ic.Clipboard, cb.name, "Clipboard on ${vm.activeProfile?.serverName}") {
+                        ShareOption(Ic.Clipboard, cb.name, clipboardPlace(vm, cb.groupId)) {
                             val list = files
                             done()
                             vm.tab = Tab.CLIPBOARDS
+                            vm.selectGroup(cb.groupId)
                             vm.activeClipboardId = cb.id
                             vm.uploadUris(cb.id, list)
                         }
@@ -292,6 +350,13 @@ private fun ShareFilesDialog(vm: AppViewModel, files: List<android.net.Uri>) {
         confirmButton = {},
         dismissButton = { TextButton(onClick = done) { Text("Cancel") } },
     )
+}
+
+/** "Clipboard on PC", or "Family · PC" when the server has several groups. */
+private fun clipboardPlace(vm: AppViewModel, groupId: String): String {
+    val server = vm.activeProfile?.serverName
+    val groups = vm.snapshot.value?.groups.orEmpty()
+    return if (groups.size < 2) "Clipboard on $server" else "${vm.groupById(groupId).name} · $server"
 }
 
 @Composable

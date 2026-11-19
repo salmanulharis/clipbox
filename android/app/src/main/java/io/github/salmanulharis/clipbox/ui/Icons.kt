@@ -61,6 +61,7 @@ object Ic {
     val Palette = icon("palette", circle(13.5f, 6.5f, 1f), circle(17.5f, 10.5f, 1f), circle(8.5f, 7.5f, 1f), circle(6.5f, 12.5f, 1f), "M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.7 1.7-1.7h2c3 0 5.5-2.5 5.5-5.5C22 6 17.5 2 12 2z")
     val Server = icon("server", rect(2f, 3f, 20f, 8f, 2f), rect(2f, 13f, 20f, 8f, 2f), "M6 7h.01M6 17h.01")
     val More = icon("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
+    val ChevronDown = icon("chevron-down", "m6 9 6 6 6-6")
     val Refresh = icon("refresh", "M21 12a9 9 0 1 1-3-6.7L21 8", "M21 3v5h-5")
     val Attach = icon("attach", "m21 11-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8L13.2 3.2a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6L15 6.6")
 }

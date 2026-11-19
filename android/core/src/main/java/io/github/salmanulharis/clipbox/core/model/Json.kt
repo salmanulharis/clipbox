@@ -30,7 +30,25 @@ object Json {
             createdAt = o.long("createdAt"),
             updatedAt = o.long("updatedAt"),
             items = List(items.length()) { clipItem(items.getJSONObject(it)) },
+            groupId = o.str("groupId") ?: Group.DEFAULT_ID,
         )
+    }
+
+    fun group(o: JSONObject): Group {
+        val id = o.getString("id")
+        return Group(
+            id = id,
+            name = o.optString("name").ifBlank { "Group" },
+            access = if (o.optString("access") == "members") "members" else "all",
+            isDefault = o.optBoolean("isDefault", id == Group.DEFAULT_ID),
+            memberCount = o.optJSONArray("members")?.length() ?: o.optInt("memberCount", 0),
+        )
+    }
+
+    /** The groups in a state payload; servers without groups get the implicit default one. */
+    fun groups(arr: JSONArray?): List<Group> {
+        val list = if (arr == null) emptyList() else List(arr.length()) { group(arr.getJSONObject(it)) }
+        return list.ifEmpty { listOf(Group.DEFAULT) }
     }
 
     fun sharedNote(o: JSONObject) = SharedNote(
@@ -47,6 +65,7 @@ object Json {
         updatedAt = o.long("updatedAt"),
         updatedBy = o.str("updatedBy"),
         updatedByName = o.optString("updatedByName", o.optString("authorName", "Unknown device")),
+        groupId = o.str("groupId") ?: Group.DEFAULT_ID,
     )
 
     fun me(o: JSONObject?): Me? = o?.let { Me(it.str("deviceId"), it.str("name"), Role.parse(it.str("role"))) }
@@ -58,6 +77,7 @@ object Json {
         return Snapshot(
             rev = o.optInt("rev"),
             boot = o.optString("boot"),
+            groups = groups(o.optJSONArray("groups")),
             clipboards = List(cbs.length()) { clipboard(cbs.getJSONObject(it)) },
             notes = List(notes.length()) { sharedNote(notes.getJSONObject(it)) },
             me = me(o.optJSONObject("me")),
@@ -77,16 +97,20 @@ object Json {
 
     fun toJson(c: Clipboard): JSONObject = JSONObject()
         .put("id", c.id).put("name", c.name).put("createdAt", c.createdAt).put("updatedAt", c.updatedAt)
-        .put("items", JSONArray(c.items.map(::toJson)))
+        .put("items", JSONArray(c.items.map(::toJson))).put("groupId", c.groupId)
 
     fun toJson(n: SharedNote): JSONObject = JSONObject()
         .put("id", n.id).put("title", n.title).put("body", n.body).put("tags", JSONArray(n.tags))
         .put("pinned", n.pinned).put("locked", n.locked).put("authorId", opt(n.authorId)).put("authorName", n.authorName)
         .put("version", n.version).put("createdAt", n.createdAt).put("updatedAt", n.updatedAt)
-        .put("updatedBy", opt(n.updatedBy)).put("updatedByName", n.updatedByName)
+        .put("updatedBy", opt(n.updatedBy)).put("updatedByName", n.updatedByName).put("groupId", n.groupId)
+
+    fun toJson(g: Group): JSONObject = JSONObject()
+        .put("id", g.id).put("name", g.name).put("access", g.access).put("isDefault", g.isDefault).put("memberCount", g.memberCount)
 
     fun toJson(s: Snapshot): JSONObject = JSONObject()
         .put("rev", s.rev).put("boot", s.boot)
+        .put("groups", JSONArray(s.groups.map(::toJson)))
         .put("clipboards", JSONArray(s.clipboards.map(::toJson)))
         .put("notes", JSONArray(s.notes.map(::toJson)))
         .put("me", s.me?.let { JSONObject().put("deviceId", opt(it.deviceId)).put("name", opt(it.name)).put("role", it.role.name.lowercase()) } ?: JSONObject.NULL)

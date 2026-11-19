@@ -2,6 +2,25 @@
 
 All notable changes to ClipBox. Versions apply to both the server/web app and the Android app.
 
+## [1.5.0] - 2026-11-19
+
+### Added
+- **Groups**: separate clipboards and shared notes on one server (for example *Family* and *Work*).
+  - The default **Everyone** group holds all existing data and is visible to every device.
+  - New groups are invite-only; the host can open them to everyone, rename them, pick members, or delete them with their content.
+  - **Group invitation QR codes** sign a device in and add it to the group in one step.
+  - Enforced on the server for every route, file and live event. Devices outside a group get `404`s and empty `skip` events, so nothing leaks, not even ids.
+  - Web: group switcher, **Manage groups** dialog, and an invite selector under **Connect**.
+  - Android: group switcher in the top bar, per-group clipboards and shared notes, offline notes keep their group, and group invitations open the invited group.
+- `GET /api/info` reports `apiVersion: 3` and `features: ["groups", "notes", "devices"]`.
+
+### Changed
+- Database schema v3. The first start backs up the v2 database to `data/db.v2-backup.json`.
+- Older Android app versions keep working; they show the clipboards and notes of all groups they can see.
+
+### Fixed
+- Android: `ContextCastToActivity` lint error in the screenshot blocker.
+
 ## [1.4.0] - 2026-11-19
 
 ### Added

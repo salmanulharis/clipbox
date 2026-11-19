@@ -123,13 +123,13 @@ test('note changes are pushed live', async () => {
 
 test('privacy: the server has no concept of private notes', async () => {
   const state = await api('GET', '/api/state');
-  assert.deepEqual(Object.keys(state.data).sort(), ['boot', 'clipboards', 'me', 'notes', 'rev', 'server']);
+  assert.deepEqual(Object.keys(state.data).sort(), ['boot', 'clipboards', 'groups', 'me', 'notes', 'rev', 'server']);
   for (const path of ['/api/private', '/api/notes/private', '/api/private-notes']) {
     assert.equal((await api('POST', path, { title: 'x' })).status, 404, path);
   }
   await new Promise((r) => setTimeout(r, 400));
   const db = JSON.parse(readFileSync(join(srv.dataDir, 'db.json'), 'utf8'));
-  assert.deepEqual(Object.keys(db).sort(), ['clipboards', 'devices', 'notes', 'serverId', 'serverName', 'version']);
+  assert.deepEqual(Object.keys(db).sort(), ['clipboards', 'devices', 'groups', 'notes', 'serverId', 'serverName', 'version']);
 });
 
 test('privacy: the browser private-note store contains no network code', () => {

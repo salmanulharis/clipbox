@@ -2,6 +2,7 @@ package io.github.salmanulharis.clipbox.network
 
 import io.github.salmanulharis.clipbox.core.model.ClipItem
 import io.github.salmanulharis.clipbox.core.model.Clipboard
+import io.github.salmanulharis.clipbox.core.model.Group
 import io.github.salmanulharis.clipbox.core.model.Json
 import io.github.salmanulharis.clipbox.core.model.SharedNote
 import io.github.salmanulharis.clipbox.core.model.Snapshot
@@ -226,6 +227,7 @@ class SyncEngine(
                     pinned = false, locked = false, authorId = s.me?.deviceId, authorName = s.me?.name ?: "This phone",
                     version = 0, createdAt = op.createdAt, updatedAt = op.createdAt,
                     updatedBy = s.me?.deviceId, updatedByName = s.me?.name ?: "This phone",
+                    groupId = op.groupId ?: Group.DEFAULT_ID,
                 )
                 OutboxOp.Kind.NOTE_UPDATE -> notes = notes.map {
                     if (it.id == op.noteId) it.copy(title = op.title.orEmpty(), body = op.body.orEmpty(), tags = op.tags.orEmpty(), updatedAt = op.createdAt) else it
@@ -241,8 +243,8 @@ class SyncEngine(
     }
 
     // ── offline changes ──────────────────────────────────────────
-    fun queueNoteCreate(title: String, body: String, tags: List<String>): String? =
-        outbox?.createNote(title, body, tags).also { publish(); flushSoon() }
+    fun queueNoteCreate(title: String, body: String, tags: List<String>, groupId: String? = null): String? =
+        outbox?.createNote(title, body, tags, groupId).also { publish(); flushSoon() }
 
     fun queueNoteUpdate(noteId: String, baseVersion: Int?, title: String, body: String, tags: List<String>) {
         outbox?.updateNote(noteId, baseVersion, title, body, tags) ?: return
@@ -284,7 +286,7 @@ class SyncEngine(
             try {
                 when (op.kind) {
                     OutboxOp.Kind.NOTE_CREATE -> {
-                        val n = api.createNote(base, token, op.title.orEmpty(), op.body.orEmpty(), op.tags.orEmpty())
+                        val n = api.createNote(base, token, op.title.orEmpty(), op.body.orEmpty(), op.tags.orEmpty(), op.groupId)
                         ob.replaceNoteId(op.noteId!!, n.id)
                         server = server?.let { s -> s.copy(notes = s.notes.filterNot { it.id == n.id } + n) }
                         _events.tryEmit(SyncEvent.NoteSynced(op.noteId, n))
@@ -315,8 +317,10 @@ class SyncEngine(
         when (op.kind) {
             OutboxOp.Kind.NOTE_UPDATE, OutboxOp.Kind.NOTE_CREATE -> {
                 val copyTitle = if (op.kind == OutboxOp.Kind.NOTE_UPDATE) "$title (offline copy)" else title
+                // Keep the copy in the note's own group; the server refuses groups this device left.
+                val groupId = op.groupId ?: server?.notes?.firstOrNull { it.id == op.noteId }?.groupId
                 try {
-                    val n = api.createNote(base, token, copyTitle, op.body.orEmpty(), op.tags.orEmpty())
+                    val n = api.createNote(base, token, copyTitle, op.body.orEmpty(), op.tags.orEmpty(), groupId)
                     server = server?.let { s -> s.copy(notes = s.notes + n) }
                     _events.tryEmit(SyncEvent.NoteSynced(if (op.kind == OutboxOp.Kind.NOTE_CREATE) op.noteId else null, n))
                     _events.tryEmit(
@@ -426,6 +430,8 @@ class SyncEngine(
             "hello" -> if (s == null || o.optInt("rev") != s.rev || o.optString("boot") != s.boot) loadState(base)
             "me" -> loadState(base)
             "change" -> {
+                // Groups or memberships changed: what this device may see changed too.
+                if (o.optString("type") == "groups") return loadState(base)
                 if (s == null || o.optString("boot") != s.boot || o.optInt("rev") > s.rev + 1) return loadState(base)
                 if (o.optInt("rev") <= s.rev) return
                 set(applyChange(s, o))
@@ -442,6 +448,7 @@ class SyncEngine(
             "remove" -> withOrder(s, order).copy(rev = rev)
             "note" -> withNote(s, Json.sharedNote(ev.getJSONObject("note"))).copy(rev = rev)
             "note-remove" -> s.copy(rev = rev, notes = s.notes.filterNot { it.id == ev.optString("id") })
+            // "skip": a change in a group this device can't see — only the revision moves.
             else -> s.copy(rev = rev)
         }
     }
