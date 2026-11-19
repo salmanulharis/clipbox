@@ -13,6 +13,8 @@ data class ServerLink(
     val pairToken: String?,
     /** Server id from the `#cb1.<serverId>` fragment, if present. */
     val serverId: String?,
+    /** SHA-256 of the server's HTTPS certificate (`#cb1.<id>.sha256-<hex>`), for self-signed LAN certificates. */
+    val certSha256: String? = null,
 )
 
 object QrLink {
@@ -36,8 +38,11 @@ object QrLink {
         val hostPart = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
         val base = "$scheme://$hostPart" + if (uri.port != -1) ":${uri.port}" else ""
         val token = if (uri.path == "/join") query(uri.rawQuery)["t"]?.takeIf { it.isNotBlank() } else null
-        val serverId = uri.fragment?.takeIf { it.startsWith("cb1.") }?.removePrefix("cb1.")?.takeIf { it.matches(Regex("[\\w-]{3,64}")) }
-        return ServerLink(base, token, serverId)
+        val parts = uri.fragment?.takeIf { it.startsWith("cb1.") }?.removePrefix("cb1.")?.split('.').orEmpty()
+        val serverId = parts.firstOrNull()?.takeIf { it.matches(Regex("[\\w-]{3,64}")) }
+        val cert = parts.drop(1).firstOrNull { it.startsWith("sha256-") }?.removePrefix("sha256-")?.lowercase()
+            ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        return ServerLink(base, token, serverId, cert)
     }
 
     private fun query(raw: String?): Map<String, String> = raw.orEmpty().split('&').mapNotNull {

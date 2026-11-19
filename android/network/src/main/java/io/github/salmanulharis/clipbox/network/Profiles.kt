@@ -24,6 +24,8 @@ data class ServerProfile(
     val deviceToken: String,
     val role: Role,
     val pairedAt: Long,
+    /** Pinned HTTPS certificate (self-signed LAN server), or null to use normal system trust. */
+    val certSha256: String? = null,
 ) {
     /** Addresses to try, in order. Plain-http public addresses are never used. */
     fun candidates(): List<String> = (listOfNotNull(lastGoodUrl) + urls).distinct().filter { UrlPolicy.check(it) == null }
@@ -88,6 +90,7 @@ class ProfileStore(private val file: EncryptedFileStore) {
         .put("serverId", p.serverId).put("serverName", p.serverName).put("urls", JSONArray(p.urls))
         .put("lastGoodUrl", p.lastGoodUrl ?: "").put("deviceId", p.deviceId).put("deviceToken", p.deviceToken)
         .put("role", p.role.name.lowercase()).put("pairedAt", p.pairedAt)
+        .put("certSha256", p.certSha256 ?: "")
 
     private fun fromJson(o: JSONObject): ServerProfile {
         val urls = o.optJSONArray("urls") ?: JSONArray()
@@ -100,6 +103,7 @@ class ProfileStore(private val file: EncryptedFileStore) {
             deviceToken = o.getString("deviceToken"),
             role = Role.parse(o.optString("role")),
             pairedAt = o.optLong("pairedAt"),
+            certSha256 = o.optString("certSha256").takeIf { it.isNotBlank() },
         )
     }
 }

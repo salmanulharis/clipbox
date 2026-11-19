@@ -68,7 +68,7 @@ class SyncEngineTest {
         val profiles = ProfileStore(EncryptedFileStore(dir, "profiles", box))
         val p = ServerProfile("srv_1", "PC", urls, null, "dev_1", "cbd_token", Role.MEMBER, 0)
         profiles.upsert(p)
-        return SyncEngine(ClipBoxApi(), profiles, SharedCache(dir, box), scope) to p
+        return SyncEngine(ClipBoxApi(), profiles, SharedCache(dir, box), scope) { EncryptedFileStore(dir, it, box) } to p
     }
 
     private suspend fun <T> until(timeoutMs: Long = 5_000, get: () -> T?): T = withTimeout(timeoutMs) {
