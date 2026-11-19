@@ -15,7 +15,8 @@ Run it on one computer, open it in any browser on your network (or anywhere thro
 - **Built-in QR scanner.** Uses the live camera, or a photo when the page isn't on HTTPS.
 - **LAN + public access.** Works on your local network and through ngrok or Cloudflare Tunnel, with no code changes.
 - **Themes.** System, Light, Dark, Midnight, Forest, Rose and Sand, remembered per device.
-- **Notes, private and shared.** Private notes never leave your browser; shared notes sync live to everyone on the server, with conflict protection.
+- **Notes, private and shared.** Private notes never leave your browser; shared notes sync live to everyone in the group, with conflict protection.
+- **Groups.** Keep clipboards and shared notes apart on one server, for example *Family* and *Work*. Invite devices to a group with its own QR code; devices only see the groups they belong to.
 - **Persistent.** Data is stored in a JSON file on the server and survives restarts.
 - **Secure by default.** Remote access always requires a password.
 - **Android app.** A native app that pairs by QR code, keeps private notes encrypted on the phone, and syncs shared notes and clipboards. See [android/README.md](android/README.md).
@@ -203,7 +204,7 @@ Switch between **Clipboards** and **Notes** in the top bar. Notes have two clear
 | | 🔒 **Private** | 👥 **Shared** |
 |---|---|---|
 | Stored | Only in this browser (IndexedDB), for this exact address | On the server (`data/db.json`) |
-| Visible to | You, in this browser | Everyone connected to the server |
+| Visible to | You, in this browser | Everyone in the current [group](#groups) |
 | Sent over the network | **Never** | Yes, synced live |
 | Works for viewers | Yes | Read-only |
 
@@ -221,6 +222,16 @@ Switch between **Clipboards** and **Notes** in the top bar. Notes have two clear
 > **Where private notes live.** They're stored by your browser *for the exact address you opened*. `http://192.168.1.20:3210`, `http://localhost:3210` and your tunnel URL each have their own separate private notes, and so does every browser and private window. Clearing site data deletes them. Safari on iPhone/iPad may erase site data after about 7 days without a visit, unless ClipBox is added to the Home Screen. **Export a backup** now and then, and use a stable address (a DHCP reservation for the server PC helps).
 >
 > **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. For highly sensitive notes, use the [ClipBox Android app](android/README.md), whose code doesn't come from the server.
+
+### Groups
+
+Groups split one server into separate spaces. Each group has its own clipboards and shared notes; private notes are never part of a group.
+
+- **Everyone** is the default group. Every device sees it, and everything created before groups existed lives there. It can't be deleted.
+- **New groups are invite-only.** As the host, open the group menu next to *Clipboards / Notes* → **Manage groups**, and create one (it starts with a *General* clipboard). Switch a group's access between *Invited only* and *Everyone*, rename it, tick which devices are members, or delete it (this deletes its clipboards, files and shared notes).
+- **Inviting a device:** the QR button on a group (or the *Add the device to* selector under **Connect**) shows a code that signs the new device in **and** adds it to that group. Invitation codes always carry a one-time token, even on the LAN. The Android app opens the invited group straight away.
+- **Switching:** use the group menu in the top bar (web) or the group name next to the scan button (Android). Each device remembers the last group it had open.
+- **Who sees what:** a device sees *Everyone*, open groups, and the invite-only groups it's a member of. The host sees every group. For every other device, an invite-only group doesn't exist: its clipboards, notes, files and live updates are never sent, and its URLs answer `404`.
 
 ### Devices & roles
 
@@ -281,7 +292,8 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 - **Sessions** are HMAC-signed, `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS), tied to a device record, so revoking the device ends the session. **Changing `AUTH_PASSWORD` signs out every browser.** The signing secret lives in `DATA_DIR/secret.key`.
 - **App devices** authenticate with a random 256-bit bearer token issued once at pairing. Only its SHA-256 hash is stored. Revoking the device invalidates the token instantly. App devices keep working through a tunnel even if `AUTH_PASSWORD` is empty, because pairing itself was the authorisation.
 - **QR pairing tokens** expire after 10 minutes. Each one can register only **one** app device; browsers can reuse it within that window.
-- **Roles** are enforced on the server for every request: viewers can't write, and only hosts can manage devices.
+- **Roles** are enforced on the server for every request: viewers can't write, and only hosts can manage devices and groups.
+- **Groups** are enforced on the server too. Every clipboard, item, file and shared-note route checks that the device can see the group, and live events from groups a device can't see are replaced with an empty `skip` event (just the revision number), so not even ids leak.
 - **Login and pairing** attempts are rate-limited (10 failures per 5 minutes per client).
 - **CSRF and DNS rebinding.** Cookie-authenticated writes require a custom header, and unknown `Host` names are treated as remote, which blocks malicious websites from reaching your LAN instance.
 - **Uploaded files.** Only common image types are shown inline. Everything else (including SVG and HTML) is served as a download in a sandbox.
@@ -360,14 +372,19 @@ Authenticate in one of two ways:
 ```
 GET    /api/info                               server id, name, version (no data; no auth)
 POST   /api/devices/pair  {pairToken | password, name, platform}
-                                               → {deviceId, deviceToken, role, serverId, urls}
+                                               → {deviceId, deviceToken, role, serverId, urls, groupId}
 GET    /api/devices                            list devices            (host)
 PATCH  /api/devices/:id   {name?, role?, revoked?}                     (host)
 DELETE /api/devices/:id                        forget a device         (host)
 DELETE /api/devices/me                         disconnect this device
 
-GET    /api/state                              all clipboards + {me: {deviceId, role}}
-POST   /api/clipboards                {name}   create
+GET    /api/state                              visible groups, clipboards, notes + {me: {deviceId, role}}
+GET    /api/connect?group=:id                  QR links (a group invitation when `group` is set)
+GET    /api/groups                             visible groups (hosts also get `members`)
+POST   /api/groups              {name, access?}               create  (host)
+PATCH  /api/groups/:id          {name?, access?, members?}    update  (host)
+DELETE /api/groups/:id                         delete with its content (host)
+POST   /api/clipboards                {name, groupId?}  create (default group if omitted)
 PATCH  /api/clipboards/:id            {name}   rename
 POST   /api/clipboards/:id/clear               clear
 DELETE /api/clipboards/:id                     delete
@@ -384,7 +401,7 @@ PATCH  /api/notes/:id {title?, body?, tags?, baseVersion, pinned?, locked?}
 DELETE /api/notes/:id                          delete a shared note
 ```
 
-Shared notes are included in `GET /api/state` as `notes`, and live events have `type: "note"` or `"note-remove"`. Changing `title`, `body` or `tags` requires `baseVersion`; `pinned` and `locked` don't.
+Shared notes are included in `GET /api/state` as `notes`, and live events have `type: "note"` or `"note-remove"`. `POST /api/notes` takes an optional `groupId`. Clipboards and notes carry their `groupId`; a live event of `type: "groups"` means groups or memberships changed (reload `/api/state`), and `type: "skip"` is a change you can't see. Changing `title`, `body` or `tags` requires `baseVersion`; `pinned` and `locked` don't.
 
 Example: send text from a terminal on your LAN:
 
