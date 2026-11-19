@@ -68,6 +68,10 @@ fun ClipboardsTab(vm: AppViewModel) {
     val active = clipboards.firstOrNull { it.id == vm.activeClipboardId } ?: clipboards.firstOrNull()
     val online = connection is Connection.Online
     val canWrite = online && vm.role.canWrite
+    // Adding text also works offline: it's queued and sent on reconnect.
+    val canAdd = vm.role.canWrite
+    val pending by vm.pending.collectAsStateWithLifecycle()
+    var saveNote by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     var dialog by remember { mutableStateOf<String?>(null) } // "new" | "rename" | "clear" | "delete"
     var menu by remember { mutableStateOf(false) }
@@ -87,6 +91,15 @@ fun ClipboardsTab(vm: AppViewModel) {
                     Box {
                         IconAction(Ic.More, "Clipboard options") { menu = true }
                         DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Save as note") },
+                                leadingIcon = { Icon(Ic.Note, null, Modifier.size(18.dp)) },
+                                enabled = active.items.any { it.isText },
+                                onClick = {
+                                    menu = false
+                                    saveNote = active.name to active.items.filter { it.isText }.joinToString("\n\n") { it.text.orEmpty() }
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Copy all") },
                                 leadingIcon = { Icon(Ic.Copy, null, Modifier.size(18.dp)) },
@@ -108,7 +121,7 @@ fun ClipboardsTab(vm: AppViewModel) {
             Spacer(Modifier.height(10.dp))
         }
 
-        if (canWrite && active != null) {
+        if (canAdd && active != null) {
             item {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).border(1.dp, p.border, RoundedCornerShape(10.dp)).background(p.bgSoft)) {
                     OutlinedTextField(
@@ -154,7 +167,13 @@ fun ClipboardsTab(vm: AppViewModel) {
             item { EmptyState(Ic.Clipboard, "This clipboard is empty", if (canWrite) "Type above, or tap Paste to add what's on your phone's clipboard." else "Items added on other devices appear here.") }
         }
         items(items, key = { it.id }) { item ->
-            ItemRow(vm, item, canDelete = canWrite) { vm.deleteItem(active!!.id, item) }
+            val isPending = item.id in pending
+            ItemRow(
+                vm, item,
+                canDelete = canWrite && !isPending,
+                pending = isPending,
+                onSaveNote = { saveNote = "" to item.text.orEmpty() },
+            ) { vm.deleteItem(active!!.id, item) }
             HorizontalDivider(color = p.border)
         }
     }
@@ -165,10 +184,11 @@ fun ClipboardsTab(vm: AppViewModel) {
         "clear" -> active?.let { ConfirmDialog("Clear \"${it.name}\"?", "All ${it.items.size} items will be removed on every device.", "Clear", danger = true, onDismiss = { dialog = null }) { vm.clearClipboard(it.id) } }
         "delete" -> active?.let { ConfirmDialog("Delete \"${it.name}\"?", "The clipboard and all its items will be deleted on every device.", "Delete", danger = true, onDismiss = { dialog = null }) { vm.deleteClipboard(it.id) } }
     }
+    saveNote?.let { (title, body) -> SaveAsNoteDialog(vm, title, body) { saveNote = null } }
 }
 
 @Composable
-private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, onDelete: () -> Unit) {
+private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, pending: Boolean, onSaveNote: () -> Unit, onDelete: () -> Unit) {
     val p = LocalPalette.current
     var expanded by remember(item.id) { mutableStateOf(false) }
     Row(
@@ -202,6 +222,7 @@ private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, onDele
                 append(timeAgo(item.createdAt))
                 if (item.isText) append(" · ${item.text.orEmpty().length} chars") else append(" · ${bytes(item.size)}")
                 if (item.updatedAt != item.createdAt) append(" · edited")
+                if (pending) append(" · waiting to sync")
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(meta, style = MaterialTheme.typography.bodySmall, color = p.muted)
@@ -216,6 +237,7 @@ private fun ItemRow(vm: AppViewModel, item: ClipItem, canDelete: Boolean, onDele
             }
         }
         if (item.isText) IconAction(Ic.Copy, "Copy", tint = p.accent) { vm.copyText(item.text.orEmpty()) }
+        if (item.isText) IconAction(Ic.Note, "Save as note") { onSaveNote() }
         if (canDelete) IconAction(Ic.Trash, "Delete") { onDelete() }
     }
 }

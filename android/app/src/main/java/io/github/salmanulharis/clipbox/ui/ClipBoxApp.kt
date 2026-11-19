@@ -196,12 +196,13 @@ fun ConnectionBanner(vm: AppViewModel, modifier: Modifier = Modifier) {
     val connection by vm.connection.collectAsStateWithLifecycle()
     when (val c = connection) {
         is Connection.Offline -> {
+            val pendingCount = vm.pending.collectAsStateWithLifecycle().value.size
             val localNet = rememberLocalNetworkAccess()
             val needsLocal = !localNet.granted && vm.activeProfile?.urls?.any(LocalNetwork::isLocal) == true
             Banner(
                 Ic.Server,
                 if (needsLocal) "ClipBox needs \"Local network access\" to reach ${vm.activeProfile?.serverName} on your Wi-Fi."
-                else "${c.message} Changes can't be saved until you're back online.",
+                else "${c.message}" + if (pendingCount > 0) " $pendingCount change${if (pendingCount == 1) "" else "s"} will sync when you're back online." else " New changes are kept on this phone until then.",
                 warn = true, modifier = modifier,
             ) {
                 if (needsLocal) TextButton(onClick = { localNet.request { if (it) vm.refresh() } }) { Text("Allow") }
@@ -224,7 +225,9 @@ private fun ShareTargetDialog(vm: AppViewModel, text: String) {
     val p = LocalPalette.current
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     val connection by vm.connection.collectAsStateWithLifecycle()
-    val canShare = connection is Connection.Online && vm.role.canWrite
+    // Offline is fine: shared notes and clipboard items are queued and sent on reconnect.
+    val canShare = vm.activeProfile != null && vm.role.canWrite
+    val authenticate = rememberAuthenticator()
     val done = { vm.pendingShare = null }
     AlertDialog(
         onDismissRequest = done,
@@ -234,7 +237,8 @@ private fun ShareTargetDialog(vm: AppViewModel, text: String) {
                 Text(text.take(200), style = MaterialTheme.typography.bodySmall, color = p.muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(12.dp))
                 ShareOption(Ic.Lock, "New private note", "Only on this phone") {
-                    done(); vm.tab = Tab.NOTES; vm.notesScope = Scope.PRIVATE; vm.openEditor(Scope.PRIVATE, null, text)
+                    val open = { done(); vm.tab = Tab.NOTES; vm.notesScope = Scope.PRIVATE; vm.openEditor(Scope.PRIVATE, null, text) }
+                    if (vm.privateLocked) authenticate("Unlock private notes") { ok -> if (ok) { vm.unlockPrivate(); open() } } else open()
                 }
                 if (canShare) {
                     ShareOption(Ic.Users, "New shared note", "Visible to everyone on ${vm.activeProfile?.serverName}") {
@@ -246,7 +250,7 @@ private fun ShareTargetDialog(vm: AppViewModel, text: String) {
                         }
                     }
                 } else if (vm.activeProfile != null) {
-                    Text("Connect to ${vm.activeProfile?.serverName} to share with others.", style = MaterialTheme.typography.bodySmall, color = p.muted, modifier = Modifier.padding(top = 8.dp))
+                    Text("This phone is view-only on ${vm.activeProfile?.serverName}.", style = MaterialTheme.typography.bodySmall, color = p.muted, modifier = Modifier.padding(top = 8.dp))
                 }
             }
         },

@@ -90,6 +90,19 @@ class PrivateNotesRepositoryTest {
         assertEquals(listOf("x"), r.get("p_abc123")?.tags)
     }
 
+    @Test fun `imports the shared encrypted backup fixture also used by the web tests`() {
+        // test/fixtures/interop-backup.cbx at the repo root: same .cbx format on web and Android.
+        val fixture = File(System.getProperty("user.dir"), "../../test/fixtures/interop-backup.cbx")
+        assertTrue("fixture exists at ${fixture.canonicalPath}", fixture.exists())
+        val r = repo().apply { load() }
+        val res = r.importBackup(fixture.readBytes(), "fixture-passphrase".toCharArray())
+        assertEquals(1, res.added)
+        val n = r.get("p_interopfixture01")!!
+        assertEquals("Interop note", n.title)
+        assertEquals(listOf("interop"), n.tags)
+        assertTrue(n.pinned)
+    }
+
     @Test fun `random files are rejected`() {
         val r = repo().apply { load() }
         try {

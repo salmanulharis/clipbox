@@ -64,6 +64,8 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
     val online = connection is Connection.Online
     val pinned = sharedNote?.pinned ?: privateNote?.pinned ?: false
     var dialog by remember { mutableStateOf<String?>(null) } // "share" | "delete"
+    val localOnly = io.github.salmanulharis.clipbox.network.Outbox.isLocalId(e.id)
+    SecureScreen(enabled = !shared && vm.lockEnabled)
 
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -71,7 +73,7 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
             ScopeBadge(e.scope)
             Spacer(Modifier.weight(1f))
             IconAction(Ic.Copy, "Copy note") { vm.copyText(NoteText.copyText(e.title, e.body), "Note copied") }
-            if (!readOnly && (!shared || online)) IconAction(Ic.Pin, if (pinned) "Unpin" else "Pin", tint = if (pinned) p.accent else p.muted) { vm.editorPin(e) }
+            if (!readOnly && (!shared || (online && !localOnly))) IconAction(Ic.Pin, if (pinned) "Unpin" else "Pin", tint = if (pinned) p.accent else p.muted) { vm.editorPin(e) }
             if (shared && sharedNote != null && vm.canLock(sharedNote) && online) {
                 IconAction(if (sharedNote.locked) Ic.Lock else Ic.Unlock, if (sharedNote.locked) "Locked — tap to let everyone edit" else "Only I can edit", tint = if (sharedNote.locked) p.accent else p.muted) { vm.editorLock(e) }
             }
@@ -94,7 +96,7 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
                             onClick = { menu = false; dialog = "share" },
                         )
                     }
-                    if (!readOnly && (!shared || online)) {
+                    if (!readOnly) {
                         DropdownMenuItem(
                             text = { Text(if (shared) "Delete for everyone" else "Move to trash", color = p.danger) },
                             leadingIcon = { Icon(Ic.Trash, null, Modifier.size(18.dp), tint = p.danger) },
@@ -132,7 +134,7 @@ fun NoteEditorScreen(vm: AppViewModel, e: EditorState) {
             )
         }
         if (shared && !online && !readOnly) {
-            Text("Offline — changes will be saved when you reconnect.", style = MaterialTheme.typography.bodySmall, color = p.warn, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Text("Offline — changes are kept on this phone and sync when you reconnect.", style = MaterialTheme.typography.bodySmall, color = p.warn, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {

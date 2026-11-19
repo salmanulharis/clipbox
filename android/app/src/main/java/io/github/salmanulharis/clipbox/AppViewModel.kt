@@ -23,7 +23,10 @@ import io.github.salmanulharis.clipbox.core.model.SharedNote
 import io.github.salmanulharis.clipbox.network.ApiException
 import io.github.salmanulharis.clipbox.network.Connection
 import io.github.salmanulharis.clipbox.network.ServerLink
+import io.github.salmanulharis.clipbox.network.Outbox
 import io.github.salmanulharis.clipbox.network.ServerProfile
+import io.github.salmanulharis.clipbox.network.SyncEngine
+import io.github.salmanulharis.clipbox.network.SyncEvent
 import io.github.salmanulharis.clipbox.network.UrlPolicy
 import io.github.salmanulharis.clipbox.privatenotes.PrivateNotesRepository
 import kotlinx.coroutines.CancellationException
@@ -78,7 +81,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val activeId = g.profiles.activeId
     val connection = g.sync.connection
     val snapshot = g.sync.snapshot
+    /** Ids of shared notes / clipboard items changed offline and waiting to sync. */
+    val pending = g.sync.pending
     val privateNotes = g.privateNotes.notes
+
+    // ── private notes lock (fingerprint / screen lock) ───────────
+    var lockEnabled by mutableStateOf(g.prefs.getBoolean("lock_private", false)); private set
+    var privateUnlocked by mutableStateOf(false); private set
+    private var backgroundAt = 0L
+    /** True when private notes need fingerprint/PIN before they can be shown. */
+    val privateLocked: Boolean get() = lockEnabled && !privateUnlocked
+
+    fun changePrivateLock(on: Boolean) {
+        lockEnabled = on
+        privateUnlocked = on // the user just authenticated to turn it on
+        g.prefs.edit().putBoolean("lock_private", on).apply()
+    }
+
+    fun unlockPrivate() {
+        privateUnlocked = true
+    }
+
+    fun lockPrivate() {
+        if (!lockEnabled) return
+        if (editor?.scope == Scope.PRIVATE) closeEditor()
+        if (screen == Screen.Trash) screen = Screen.Home
+        privateUnlocked = false
+    }
 
     var ready by mutableStateOf(false); private set
     var tab by mutableStateOf(Tab.CLIPBOARDS)
@@ -106,18 +135,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { g.profiles.load() }
             }
             privateLoadError = privateLoadError ?: g.privateNotes.loadError
+            // Offline changes that can't be delivered anywhere are kept as private notes.
+            g.sync.onUnsynced = { title, body ->
+                runCatching { g.privateNotes.create(title, body, listOf("unsynced")) }
+            }
             ready = true
             activeProfile?.let(g.sync::start)
+            launch { g.sync.events.collect(::onSyncEvent) }
             snapshot.collect { onSnapshot() }
+        }
+    }
+
+    private fun onSyncEvent(ev: SyncEvent) {
+        when (ev) {
+            is SyncEvent.Notice -> msg(ev.message, error = true)
+            is SyncEvent.NoteSynced -> editor?.let { e ->
+                // A note created offline got its real id; edits made since then follow it.
+                if (e.scope == Scope.SHARED && (e.id == ev.localId || e.id == ev.note.id)) {
+                    e.id = ev.note.id
+                    if (!e.dirty) e.version = ev.note.version
+                    else if (ev.localId != null) e.version = ev.note.version
+                    e.status = "Synced"
+                }
+            }
         }
     }
 
     // ── lifecycle ────────────────────────────────────────────────
     fun onForeground() {
+        // Private notes lock again after the app has been in the background for 30 seconds.
+        if (lockEnabled && privateUnlocked && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 30_000) lockPrivate()
+        backgroundAt = 0
         if (ready) activeProfile?.let { if (connection.value is Connection.Idle) g.sync.start(it) }
     }
 
     fun onBackground() {
+        backgroundAt = System.currentTimeMillis()
         editor?.let { e -> if (e.dirty) viewModelScope.launch { save(e) } }
         g.sync.stop()
     }
@@ -155,8 +208,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun connect(link: ServerLink, password: String?): ConnectOutcome {
         UrlPolicy.check(link.baseUrl)?.let { return ConnectOutcome.Failed(it) }
+        val known = g.profiles.profiles.value.firstOrNull { it.serverId == link.serverId }
+        // Trust the certificate fingerprint from the QR code (self-signed HTTPS on the LAN).
+        val pin = link.certSha256 ?: known?.certSha256
+        val linkApi = g.api.pinned(pin)
         val info = try {
-            g.api.info(link.baseUrl)
+            linkApi.info(link.baseUrl)
         } catch (e: ApiException) {
             return ConnectOutcome.Failed(
                 if (e.isOffline) "Couldn't reach ${link.baseUrl}. Make sure this phone is on the same network, or use the public (https) QR code."
@@ -167,7 +224,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return ConnectOutcome.Failed("This QR code belongs to a different ClipBox server than the one answering at ${link.baseUrl}.")
         }
         val pair = try {
-            g.api.pair(link.baseUrl, link.pairToken?.takeIf { password == null }, password, deviceName())
+            linkApi.pair(link.baseUrl, link.pairToken?.takeIf { password == null }, password, deviceName())
         } catch (e: ApiException) {
             return when {
                 e.reason == "pair_expired" -> ConnectOutcome.NeedsPassword(info.serverName, "This QR code has expired or was already used. Show a fresh one, or enter the server password.")
@@ -186,9 +243,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             deviceToken = pair.deviceToken,
             role = pair.role,
             pairedAt = System.currentTimeMillis(),
+            certSha256 = pin,
         )
         withContext(Dispatchers.IO) { g.profiles.upsert(profile) }
-        if (old != null) g.scope.launch(Dispatchers.IO) { runCatching { g.api.disconnect(link.baseUrl, old.deviceToken) } }
+        if (old != null) g.scope.launch(Dispatchers.IO) { runCatching { linkApi.disconnect(link.baseUrl, old.deviceToken) } }
         activeClipboardId = null
         g.sync.start(profile)
         screen = Screen.Home
@@ -211,7 +269,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val p = activeProfile ?: return
         viewModelScope.launch {
             val base = (connection.value as? Connection.Online)?.base
-            if (base != null) runCatching { g.api.disconnect(base, p.deviceToken) }
+            if (base != null) runCatching { g.sync.api.disconnect(base, p.deviceToken) }
             forget(p)
             msg("Disconnected from ${p.serverName}. Your private notes stay on this phone.")
         }
@@ -224,7 +282,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun forget(p: ServerProfile) {
         if (editor?.scope == Scope.SHARED) { editor = null; screen = Screen.Home }
-        g.sync.clear()
+        val unsent = g.sync.outbox?.ops?.value?.count { it.kind != io.github.salmanulharis.clipbox.network.OutboxOp.Kind.NOTE_DELETE } ?: 0
+        g.sync.clear() // unsent offline changes are rescued into private notes (onUnsynced)
+        if (unsent > 0) msg("$unsent unsynced change${if (unsent == 1) " was" else "s were"} kept as private notes (tag: unsynced).")
         withContext(Dispatchers.IO) {
             g.cache.delete(p.serverId)
             g.profiles.remove(p.serverId)
@@ -247,18 +307,75 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun readDeviceClipboard(): String? =
         clipboardManager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(getApplication())?.toString()
 
+    /** Add text to a clipboard. Offline, it's queued and sent when the phone reconnects. */
     fun addText(clipboardId: String, text: String, onDone: (Boolean) -> Unit = {}) {
         if (text.isBlank()) return
         viewModelScope.launch {
-            val item = server { b, t -> g.api.addText(b, t, clipboardId, text) }
-            if (item != null) g.sync.applyItem(clipboardId, item)
-            onDone(item != null)
+            if (!g.sync.isOnline) {
+                val ok = runCatching { withContext(Dispatchers.IO) { g.sync.queueClipText(clipboardId, text) } }
+                    .onFailure { msg(it.message ?: "Couldn't save it for later.", error = true) }.isSuccess
+                if (ok) msg("Saved on this phone. It will be added when you're back online.")
+                onDone(ok)
+                return@launch
+            }
+            try {
+                val item = g.sync.api.addText(g.sync.base(), g.sync.token!!, clipboardId, text)
+                g.sync.applyItem(clipboardId, item)
+                onDone(true)
+            } catch (e: ApiException) {
+                if (e.isOffline) {
+                    withContext(Dispatchers.IO) { g.sync.queueClipText(clipboardId, text) }
+                    msg("Connection lost. It will be added when you're back online.")
+                    onDone(true)
+                } else {
+                    msg(e.message ?: "Couldn't add it.", error = true)
+                    onDone(false)
+                }
+            }
         }
+    }
+
+    /**
+     * "Save as note" for clipboard content. Private notes are stored on this phone only;
+     * shared notes go to the server (queued while offline).
+     */
+    fun saveAsNote(scope: Scope, title: String, body: String) {
+        val t = NoteText.cleanTitle(title)
+        if (t.isBlank() && body.isBlank()) return
+        viewModelScope.launch {
+            if (scope == Scope.PRIVATE) {
+                val n = local { create(t, body) } ?: return@launch
+                msg("Saved as a private note", actionLabel = "Open") { tab = Tab.NOTES; notesScope = Scope.PRIVATE; openEditor(Scope.PRIVATE, n.id) }
+                return@launch
+            }
+            val id = createShared(t, body, emptyList()) ?: return@launch
+            msg(if (Outbox.isLocalId(id)) "Saved as a shared note. It will sync when you're back online." else "Saved as a shared note", actionLabel = "Open") {
+                tab = Tab.NOTES; notesScope = Scope.SHARED; openEditor(Scope.SHARED, id)
+            }
+        }
+    }
+
+    /** Create a shared note online, or queue it offline. Returns its id (a temporary local id when queued). */
+    private suspend fun createShared(title: String, body: String, tags: List<String>): String? {
+        if (g.sync.isOnline) {
+            try {
+                val n = g.sync.api.createNote(g.sync.base(), g.sync.token!!, title, body, tags)
+                g.sync.applyNote(n)
+                return n.id
+            } catch (e: ApiException) {
+                if (!e.isOffline) {
+                    msg(e.message ?: "Couldn't share the note.", error = true)
+                    return null
+                }
+            }
+        }
+        return runCatching { withContext(Dispatchers.IO) { g.sync.queueNoteCreate(title, body, tags) } }
+            .onFailure { msg(it.message ?: "Couldn't save it for later.", error = true) }.getOrNull()
     }
 
     fun deleteItem(clipboardId: String, item: ClipItem) {
         viewModelScope.launch {
-            if (server { b, t -> g.api.deleteItem(b, t, clipboardId, item.id) } != null) {
+            if (server { b, t -> g.sync.api.deleteItem(b, t, clipboardId, item.id) } != null) {
                 g.sync.removeItem(clipboardId, item.id)
                 if (item.isText && item.text != null) msg("Item deleted", actionLabel = "Undo") { addText(clipboardId, item.text!!) }
                 else msg("Item deleted")
@@ -268,7 +385,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun createClipboard(name: String) {
         viewModelScope.launch {
-            server { b, t -> g.api.createClipboard(b, t, name) }?.let {
+            server { b, t -> g.sync.api.createClipboard(b, t, name) }?.let {
                 g.sync.applyClipboard(it)
                 activeClipboardId = it.id
             }
@@ -276,16 +393,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun renameClipboard(id: String, name: String) {
-        viewModelScope.launch { server { b, t -> g.api.renameClipboard(b, t, id, name) }?.let(g.sync::applyClipboard) }
+        viewModelScope.launch { server { b, t -> g.sync.api.renameClipboard(b, t, id, name) }?.let(g.sync::applyClipboard) }
     }
 
     fun clearClipboard(id: String) {
-        viewModelScope.launch { server { b, t -> g.api.clearClipboard(b, t, id) }?.let { g.sync.applyClipboard(it); msg("Clipboard cleared") } }
+        viewModelScope.launch { server { b, t -> g.sync.api.clearClipboard(b, t, id) }?.let { g.sync.applyClipboard(it); msg("Clipboard cleared") } }
     }
 
     fun deleteClipboard(id: String) {
         viewModelScope.launch {
-            if (server { b, t -> g.api.deleteClipboard(b, t, id) } != null) {
+            if (server { b, t -> g.sync.api.deleteClipboard(b, t, id) } != null) {
                 g.sync.removeClipboard(id)
                 activeClipboardId = null
                 msg("Clipboard deleted")
@@ -298,7 +415,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val token = g.sync.token ?: return null
         val base = (connection.value as? Connection.Online)?.base ?: return null
         return try {
-            val bytes = g.api.fileBytes(base, token, item.id)
+            val bytes = g.sync.api.fileBytes(base, token, item.id)
             withContext(Dispatchers.Default) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -318,12 +435,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun canLock(n: SharedNote): Boolean = role.canWrite && (role == Role.HOST || n.authorId == myDeviceId)
 
     fun togglePinShared(n: SharedNote) {
-        viewModelScope.launch { server { b, t -> g.api.updateNote(b, t, n.id, pinned = !n.pinned) }?.let(g.sync::applyNote) }
+        viewModelScope.launch { server { b, t -> g.sync.api.updateNote(b, t, n.id, pinned = !n.pinned) }?.let(g.sync::applyNote) }
     }
 
     fun deleteShared(n: SharedNote, after: () -> Unit = {}) {
         viewModelScope.launch {
-            if (server { b, t -> g.api.deleteNote(b, t, n.id) } != null) {
+            if (!g.sync.isOnline || Outbox.isLocalId(n.id)) {
+                withContext(Dispatchers.IO) { g.sync.queueNoteDelete(n.id) }
+                msg(if (Outbox.isLocalId(n.id)) "Note discarded" else "Deleted here. It will be removed for everyone when you're back online.")
+                after()
+                return@launch
+            }
+            if (server { b, t -> g.sync.api.deleteNote(b, t, n.id) } != null) {
                 g.sync.removeNote(n.id)
                 msg("Shared note deleted")
                 after()
@@ -452,13 +575,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             e.pending = true
             return
         }
+        if (!g.sync.isOnline || Outbox.isLocalId(e.id)) {
+            saveOffline(e, title, body, tags, seq)
+            return
+        }
         e.saving = true
         e.status = "Saving…"
         try {
             val token = g.sync.token ?: throw ApiException(0, "Not connected")
             val base = g.sync.base()
-            val n = if (e.id == null) g.api.createNote(base, token, title, body, tags)
-            else g.api.updateNote(base, token, e.id!!, title = title, body = body, tags = tags, baseVersion = e.version)
+            val n = if (e.id == null) g.sync.api.createNote(base, token, title, body, tags)
+            else g.sync.api.updateNote(base, token, e.id!!, title = title, body = body, tags = tags, baseVersion = e.version)
             e.id = n.id
             e.version = n.version
             g.sync.applyNote(n)
@@ -471,20 +598,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             when {
                 ex.isConflict -> ex.body?.optJSONObject("note")?.let { e.conflict = io.github.salmanulharis.clipbox.core.model.Json.sharedNote(it) }
                 ex.status == 404 -> e.deletedRemotely = true
-                ex.isOffline -> {
-                    e.status = "Offline — will retry"
-                    e.saveJob = viewModelScope.launch { delay(3000); save(e) }
-                }
+                ex.isOffline -> Unit
                 else -> e.status = ex.message ?: "Not saved"
             }
             e.statusError = true
             if (ex.isConflict || ex.status == 404) e.status = "Not saved"
+            if (ex.isOffline) {
+                e.saving = false
+                saveOffline(e, title, body, tags, seq)
+            }
         } finally {
             e.saving = false
             if (e.pending) {
                 e.pending = false
                 if (e.dirty) save(e)
             }
+        }
+    }
+
+    /** Shared note edited while offline: keep it in the encrypted outbox; it syncs on reconnect. */
+    private suspend fun saveOffline(e: EditorState, title: String, body: String, tags: List<String>, seq: Int) {
+        try {
+            val id = e.id
+            val newId = withContext(Dispatchers.IO) {
+                if (id == null) g.sync.queueNoteCreate(title, body, tags)
+                else { g.sync.queueNoteUpdate(id, e.version, title, body, tags); id }
+            } ?: throw IllegalStateException("Connect to a server first.")
+            e.id = newId
+            if (e.seq == seq) e.dirty = false
+            e.status = "Saved on this phone · syncs when you're back online"
+            e.statusError = false
+        } catch (ex: CancellationException) {
+            throw ex
+        } catch (ex: Exception) {
+            e.status = ex.message ?: "Not saved"
+            e.statusError = true
         }
     }
 
@@ -549,7 +697,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun editorLock(e: EditorState) {
         val n = snapshot.value?.notes?.firstOrNull { it.id == e.id } ?: return
         viewModelScope.launch {
-            server { b, t -> g.api.updateNote(b, t, n.id, locked = !n.locked) }?.let {
+            server { b, t -> g.sync.api.updateNote(b, t, n.id, locked = !n.locked) }?.let {
                 g.sync.applyNote(it)
                 msg(if (it.locked) "Locked — only you and the host can edit" else "Unlocked — everyone can edit")
             }
@@ -564,10 +712,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             if (e.scope == Scope.PRIVATE) {
                 save(e)
-                server { b, t -> g.api.createNote(b, t, title, e.body, tags) }?.let {
-                    g.sync.applyNote(it)
-                    msg("Shared a copy with everyone")
-                }
+                val id = createShared(title, e.body, tags) ?: return@launch
+                msg(if (Outbox.isLocalId(id)) "A copy will be shared when you're back online" else "Shared a copy with everyone")
             } else {
                 local { create(title, e.body, tags) }?.let { msg("Saved a private copy on this phone") }
             }
@@ -600,6 +746,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun onSnapshot() {
         val e = editor ?: return
         if (e.scope != Scope.SHARED || e.id == null || e.saving || e.conflict != null || e.deletedRemotely) return
+        if (Outbox.isLocalId(e.id)) return // created offline; NoteSynced will give it its real id
         val n = snapshot.value?.notes?.firstOrNull { it.id == e.id }
         if (n == null) {
             if (connection.value !is Connection.Online) return
