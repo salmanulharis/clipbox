@@ -25,6 +25,8 @@ import io.github.salmanulharis.clipbox.core.model.SharedNote
 import io.github.salmanulharis.clipbox.core.model.Snapshot
 import io.github.salmanulharis.clipbox.network.ApiException
 import io.github.salmanulharis.clipbox.network.Connection
+import io.github.salmanulharis.clipbox.network.DeviceInfo
+import io.github.salmanulharis.clipbox.network.Invite
 import io.github.salmanulharis.clipbox.network.ServerLink
 import io.github.salmanulharis.clipbox.network.Outbox
 import io.github.salmanulharis.clipbox.network.ServerProfile
@@ -49,6 +51,7 @@ sealed interface Screen {
     data object Editor : Screen
     data object Scanner : Screen
     data object Trash : Screen
+    data object Groups : Screen
 }
 
 data class UiMessage(val text: String, val error: Boolean = false, val actionLabel: String? = null, val action: (() -> Unit)? = null)
@@ -337,6 +340,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         activeClipboardId = null
         activeId.value?.let { g.prefs.edit().putString(groupKey(it), id).apply() }
     }
+
+    // ── group management (host only; the server enforces it too) ─
+    /** Devices on the server, for choosing group members. */
+    var devices by mutableStateOf<List<DeviceInfo>>(emptyList()); private set
+
+    fun openGroups() {
+        screen = Screen.Groups
+        loadDevices()
+    }
+
+    fun loadDevices() {
+        if (role != Role.HOST) return
+        viewModelScope.launch { server { b, t -> g.sync.api.devices(b, t) }?.let { devices = it } }
+    }
+
+    fun createGroup(name: String) {
+        val n = name.trim()
+        if (n.isEmpty()) return
+        viewModelScope.launch {
+            server { b, t -> g.sync.api.createGroup(b, t, n) }?.let {
+                g.sync.applyGroup(it)
+                msg("Group \"${it.name}\" created", actionLabel = "Open") { selectGroup(it.id); screen = Screen.Home }
+            }
+        }
+    }
+
+    fun renameGroup(id: String, name: String) {
+        val n = name.trim()
+        if (n.isEmpty()) return
+        viewModelScope.launch { server { b, t -> g.sync.api.updateGroup(b, t, id, name = n) }?.let(g.sync::applyGroup) }
+    }
+
+    fun setGroupAccess(id: String, membersOnly: Boolean) {
+        viewModelScope.launch {
+            server { b, t -> g.sync.api.updateGroup(b, t, id, access = if (membersOnly) "members" else "all") }?.let {
+                g.sync.applyGroup(it)
+                msg(if (it.membersOnly) "\"${it.name}\" is now invite-only" else "Every device can now see \"${it.name}\"")
+            }
+        }
+    }
+
+    fun setMember(group: Group, deviceId: String, member: Boolean) {
+        val current = group.members.orEmpty()
+        val next = if (member) (current + deviceId).distinct() else current - deviceId
+        viewModelScope.launch { server { b, t -> g.sync.api.updateGroup(b, t, group.id, members = next) }?.let(g.sync::applyGroup) }
+    }
+
+    fun deleteGroup(group: Group) {
+        viewModelScope.launch {
+            if (server { b, t -> g.sync.api.deleteGroup(b, t, group.id) } != null) {
+                g.sync.removeGroup(group.id)
+                if (selectedGroupId == group.id) selectGroup(Group.DEFAULT_ID)
+                msg("Group \"${group.name}\" deleted")
+            }
+        }
+    }
+
+    /** QR links that connect another device (and add it to [groupId] when given). */
+    suspend fun invite(groupId: String?): Invite? = server { b, t -> g.sync.api.invite(b, t, groupId?.takeIf { it != Group.DEFAULT_ID }) }
 
     /** Who sees shared things in the open group, e.g. `members of "Family"`. */
     fun audience(group: Group = currentGroup()): String {

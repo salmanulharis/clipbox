@@ -107,6 +107,7 @@ fun ClipBoxApp(vm: AppViewModel) {
             Screen.Editor -> vm.editor?.let { NoteEditorScreen(vm, it) }
             Screen.Scanner -> ScannerScreen(vm)
             Screen.Trash -> TrashScreen(vm)
+            Screen.Groups -> GroupsScreen(vm)
         }
         SnackbarHost(
             snackbar,
@@ -233,6 +234,14 @@ private fun GroupSwitcher(vm: AppViewModel) {
                             vm.msg("Switched to ${g.name}")
                         }
                     },
+                )
+            }
+            if (vm.role == io.github.salmanulharis.clipbox.core.model.Role.HOST) {
+                HorizontalDivider(color = p.border)
+                DropdownMenuItem(
+                    text = { Text("Manage groups", color = p.text) },
+                    leadingIcon = { Icon(Ic.Settings, null, Modifier.size(18.dp), tint = p.muted) },
+                    onClick = { open = false; vm.openGroups() },
                 )
             }
         }

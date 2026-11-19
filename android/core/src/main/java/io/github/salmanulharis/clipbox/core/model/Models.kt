@@ -40,6 +40,8 @@ data class Group(
     val access: String,
     val isDefault: Boolean,
     val memberCount: Int = 0,
+    /** Member device ids; only sent to hosts (null for everyone else). */
+    val members: List<String>? = null,
 ) {
     val membersOnly: Boolean get() = access == "members"
 
