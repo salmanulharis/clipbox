@@ -199,3 +199,62 @@ test('v2 databases are upgraded to groups with a one-time backup', async () => {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test('password groups are listed as locked and joined with their password', async () => {
+  const d = await device('Joiner');
+  const bad = await api('POST', '/api/groups', { name: 'No password', access: 'password' });
+  assert.equal(bad.status, 400, 'a password group needs a password');
+  assert.equal((await api('POST', '/api/groups', { name: 'Short', access: 'password', password: 'abc' })).status, 400);
+
+  const { data: g } = await api('POST', '/api/groups', { name: 'Family PW', access: 'password', password: 'sunflower' });
+  assert.equal(g.access, 'password');
+  assert.equal(JSON.stringify(g).includes('scrypt'), false, 'the hash is never sent');
+  const { data: state } = await api('GET', '/api/state');
+  const cb = state.clipboards.find((c) => c.groupId === g.id);
+  await api('POST', `/api/clipboards/${cb.id}/items`, { text: 'pw-secret-item' });
+
+  // Listed, locked, and empty for a device that hasn't joined.
+  const { data: before } = await api('GET', '/api/state', undefined, h(d));
+  const listed = before.groups.find((x) => x.id === g.id);
+  assert.equal(listed.locked, true);
+  assert.equal(JSON.stringify(before).includes('pw-secret-item') || JSON.stringify(before).includes(cb.id), false);
+  assert.equal((await api('POST', `/api/clipboards/${cb.id}/items`, { text: 'x' }, h(d))).status, 404);
+
+  // Wrong password, then the right one.
+  const wrong = await api('POST', `/api/groups/${g.id}/join`, { password: 'nope' }, h(d));
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.data.reason, 'group_password');
+  const ok = await api('POST', `/api/groups/${g.id}/join`, { password: 'sunflower' }, h(d));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.locked, false);
+  const { data: after } = await api('GET', '/api/state', undefined, h(d));
+  assert.ok(after.clipboards.find((c) => c.id === cb.id).items.some((i) => i.text === 'pw-secret-item'));
+  assert.equal((await api('GET', `/api/connect?group=${g.id}`, undefined, h(d))).status, 403, 'only the host invites');
+
+  // Changing the password keeps members; the host can still remove them.
+  await api('PATCH', `/api/groups/${g.id}`, { password: 'new-password' });
+  assert.equal((await api('GET', '/api/state', undefined, h(d))).data.groups.find((x) => x.id === g.id).locked, false);
+  assert.equal((await api('POST', `/api/groups/${g.id}/join`, { password: 'sunflower' }, h(await device('Late')))).status, 403, 'old password no longer works');
+  await api('PATCH', `/api/groups/${g.id}`, { members: [] });
+  assert.equal((await api('GET', '/api/state', undefined, h(d))).data.groups.find((x) => x.id === g.id).locked, true);
+});
+
+test('leaving a group, and switching between open, password and invite-only', async () => {
+  const d = await device('Leaver');
+  const { data: g } = await api('POST', '/api/groups', { name: 'Modes', access: 'password', password: 'secret-1' });
+  await api('POST', `/api/groups/${g.id}/join`, { password: 'secret-1' }, h(d));
+  assert.equal((await api('POST', `/api/groups/${g.id}/leave`, undefined, h(d))).status, 200);
+  const locked = async () => (await api('GET', '/api/state', undefined, h(d))).data.groups.find((x) => x.id === g.id);
+  assert.equal((await locked()).locked, true);
+
+  // Invite-only hides it completely; open shows it to everyone; back to password needs a password again.
+  await api('PATCH', `/api/groups/${g.id}`, { access: 'members' });
+  assert.equal(await locked(), undefined);
+  assert.equal((await api('POST', `/api/groups/${g.id}/join`, { password: 'secret-1' }, h(d))).status, 404, 'no joining invite-only groups');
+  await api('PATCH', `/api/groups/${g.id}`, { access: 'all' });
+  assert.equal((await locked()).locked, false);
+  assert.equal((await api('POST', `/api/groups/${g.id}/leave`, undefined, h(d))).status, 400, "open groups can't be left");
+  assert.equal((await api('PATCH', `/api/groups/${g.id}`, { access: 'password' })).status, 400, 'the old password was dropped');
+  assert.equal((await api('PATCH', `/api/groups/${g.id}`, { access: 'password', password: 'secret-2' })).status, 200);
+  assert.equal((await api('POST', `/api/groups/${g.id}/join`, { password: 'secret-2' }, h(d))).status, 200);
+});

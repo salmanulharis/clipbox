@@ -143,7 +143,7 @@ const Notes = (() => {
           + (ls === 'off'
             ? 'Add a passphrase (lock icon) to encrypt them in this browser. '
             : 'They are encrypted with your passphrase and lock automatically after 10 minutes without activity and whenever the page reloads. ')
-          + 'Because this page\'s code comes from the server, someone who modifies the server\'s ClipBox code could read them; for very sensitive notes, use the ClipBox Android app.';
+          + 'Because this page\'s code comes from the server, someone who modifies the server\'s ClipBox code could read them; keep very sensitive secrets in a dedicated password manager.';
         b.append(p);
         if (ls === 'unlocked') {
           const row = document.createElement('div');
@@ -705,11 +705,11 @@ const Notes = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
-  /** Encrypted .cbx backup (same format as the Android app) by default; plain JSON on request. */
+  /** Encrypted .cbx backup by default; plain JSON on request. */
   async function exportPrivate() {
     const pass = await passDialog({
       title: 'Back up private notes',
-      message: 'The backup is encrypted with this passphrase. You can restore it here or in the ClipBox Android app.',
+      message: 'The backup is encrypted with this passphrase. You can restore it in any browser running ClipBox.',
       confirm: true,
       ok: 'Save encrypted backup',
       secondary: 'Save without encryption',
@@ -733,7 +733,7 @@ const Notes = (() => {
     checkReminder();
   }
 
-  /** Restore a .json or encrypted .cbx backup (from this browser, another browser, or the Android app). */
+  /** Restore a .json or encrypted .cbx backup (from this browser or another one). */
   async function importPrivate(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     let pass = null;

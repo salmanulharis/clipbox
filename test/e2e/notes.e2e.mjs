@@ -396,3 +396,67 @@ test('a browser that joins with a group invitation opens that group', async () =
   await page.locator('#group-name', { hasText: name }).waitFor();
   await context.close();
 });
+
+test('password groups: locked in the menu, joined with the password, and left again', async () => {
+  const H = { 'X-ClipBox': '1', 'Content-Type': 'application/json' };
+  const name = `Locked ${Date.now() % 100000}`;
+  const g = await (await fetch(`${srv.base}/api/groups`, { method: 'POST', headers: H, body: JSON.stringify({ name, access: 'password', password: 'garden42' }) })).json();
+  const st = await (await fetch(`${srv.base}/api/state`)).json();
+  const cb = st.clipboards.find((c) => c.groupId === g.id);
+  await fetch(`${srv.base}/api/clipboards/${cb.id}/items`, { method: 'POST', headers: H, body: JSON.stringify({ text: 'behind-the-password' }) });
+
+  // A member (not host) device: a remote browser signed in with a plain QR link.
+  const { token } = await (await fetch(`${srv.base}/api/connect`)).json();
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 }, extraHTTPHeaders: { 'X-Forwarded-For': '203.0.113.50' } });
+  const page = await context.newPage();
+  page.on('pageerror', (e) => { throw e; });
+  const requests = [];
+  page.on('request', (r) => requests.push(r.postData() || ''));
+  await page.goto(`${srv.base}/join?t=${encodeURIComponent(token)}`);
+  await page.locator('#app').waitFor({ state: 'visible' });
+
+  await page.click('#btn-group');
+  const item = page.locator('#group-menu .menu-item', { hasText: name });
+  await item.locator('.menu-hint', { hasText: 'Join' }).waitFor();
+  await shot(page, '16-group-locked');
+  await item.click();
+  await page.locator('#dlg-pass[open]').waitFor();
+  await page.fill('#pass-1', 'wrong-one');
+  await page.click('#pass-ok');
+  await page.locator('#pass-error', { hasText: 'Wrong password' }).waitFor();
+  await shot(page, '17-group-join');
+  await page.fill('#pass-1', 'garden42');
+  await page.click('#pass-ok');
+  await page.locator('#group-name', { hasText: name }).waitFor();
+  await page.locator('.item .item-text', { hasText: 'behind-the-password' }).waitFor();
+  assert.ok(requests.some((b) => b.includes('garden42')), 'the password goes only to the join request');
+
+  // Leave again: back to locked.
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: `Leave "${name}"` }).click();
+  await page.click('#prompt-ok');
+  await page.locator('#group-name', { hasText: 'Everyone' }).waitFor();
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: name }).locator('.menu-hint').waitFor();
+  await context.close();
+});
+
+test('the host creates a password group from the dialog', async () => {
+  const { context, page } = await openApp();
+  const name = `PW ${Date.now() % 100000}`;
+  await page.click('#btn-group');
+  await page.locator('#group-menu .menu-item', { hasText: 'Manage groups' }).click();
+  await page.locator('#dlg-groups[open]').waitFor();
+  await page.fill('#group-new-name', name);
+  await page.selectOption('#group-new-access', 'password');
+  await page.fill('#group-new-password', 'river-stone');
+  await shot(page, '18-group-create-password');
+  await page.click('#group-create button[type="submit"]');
+  const row = page.locator('#group-list .group-row', { hasText: name });
+  await row.locator('.device-meta', { hasText: 'Password' }).waitFor();
+  assert.equal(await row.locator('.role-select').inputValue(), 'password');
+  await row.locator('[aria-label="Change password"]').waitFor();
+  const groups = (await (await fetch(`${srv.base}/api/groups`)).json()).groups;
+  assert.equal(groups.find((x) => x.name === name).access, 'password');
+  await context.close();
+});

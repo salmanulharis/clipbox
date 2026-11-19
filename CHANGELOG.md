@@ -1,28 +1,30 @@
 # Changelog
 
-All notable changes to ClipBox. Versions apply to both the server/web app and the Android app.
+All notable changes to ClipBox. Since 1.5.0 ClipBox is web only; versions 1.3.0–1.4.0 also included an Android app.
 
 ## [1.5.0] - 2026-11-19
 
 ### Added
 - **Groups**: separate clipboards and shared notes on one server (for example *Family* and *Work*).
   - The default **Everyone** group holds all existing data and is visible to every device.
-  - New groups are invite-only; the host can open them to everyone, rename them, pick members, or delete them with their content.
+  - Three kinds of group: **Open** (every device sees it directly), **Password** (listed with a lock; entering the optional group password once joins it) and **Invited only** (hidden from non-members). The host can switch kinds, change passwords, pick members in any kind, rename, or delete a group with its content.
+  - Members can leave password and invite-only groups.
   - **Group invitation QR codes** sign a device in and add it to the group in one step.
   - Enforced on the server for every route, file and live event. Devices outside a group get `404`s and empty `skip` events, so nothing leaks, not even ids.
   - Web: group switcher, **Manage groups** dialog, and an invite selector under **Connect**.
-  - Android: group switcher in the top bar, per-group clipboards and shared notes, offline notes keep their group, and group invitations open the invited group.
-  - Android hosts can manage groups in the app: create, rename, invite-only switch, members, invitation QR codes, delete.
   - A browser that joins with a group invitation opens that group.
+- Group passwords are scrypt-hashed, never sent back, and wrong attempts share the login rate limit.
 - `GET /api/info` reports `apiVersion: 3` and `features: ["groups", "notes", "devices"]`.
 
 ### Changed
 - Database schema v3. The first start backs up the v2 database to `data/db.v2-backup.json`.
-- Older Android app versions keep working; they show the clipboards and notes of all groups they can see.
+
+### Removed
+- **The Android app.** ClipBox is web only now: open it in the phone's browser (QR connect works the same). The `android/` project, its CI job and the APK release are gone; releases publish the source with the changelog. Existing app pairings keep working until they're removed under *Manage devices*.
 
 ### Fixed
 - Scripts and health checks (e.g. `curl …/api/state`) no longer create an anonymous "Browser" device on every call; only real browsers are recorded as devices.
-- Android: `ContextCastToActivity` lint error in the screenshot blocker.
+- Group menu items now show their icons (lock, key, people) and line up; opening the group or theme menu closes the other.
 
 ## [1.4.0] - 2026-11-19
 

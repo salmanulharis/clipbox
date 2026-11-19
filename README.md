@@ -16,23 +16,12 @@ Run it on one computer, open it in any browser on your network (or anywhere thro
 - **LAN + public access.** Works on your local network and through ngrok or Cloudflare Tunnel, with no code changes.
 - **Themes.** System, Light, Dark, Midnight, Forest, Rose and Sand, remembered per device.
 - **Notes, private and shared.** Private notes never leave your browser; shared notes sync live to everyone in the group, with conflict protection.
-- **Groups.** Keep clipboards and shared notes apart on one server, for example *Family* and *Work*. Invite devices to a group with its own QR code; devices only see the groups they belong to.
+- **Groups.** Keep clipboards and shared notes apart on one server, for example *Family* and *Work*. Each group is open to every device, protected by an optional password, or invite-only.
 - **Persistent.** Data is stored in a JSON file on the server and survives restarts.
 - **Secure by default.** Remote access always requires a password.
-- **Android app.** A native app that pairs by QR code, keeps private notes encrypted on the phone, and syncs shared notes and clipboards. See [android/README.md](android/README.md).
 - **Tiny.** Plain Node.js with two dependencies (`qrcode`, `jsqr`), no database and no build step.
 
 ---
-
-## Android app
-
-The `android/` folder contains a native Android app (Kotlin + Jetpack Compose, Android 8.0+):
-
-1. On your computer, open ClipBox and click **Connect**.
-2. In the app, tap **Scan QR code** and scan it. The app pairs itself with a device token and remembers the server.
-3. On Android 17+, allow **Local network access** when asked; the app needs it to reach a server on your Wi-Fi.
-
-Private notes in the app are encrypted with a key in the Android Keystore and are never sent to the server. Shared notes and clipboards sync live. Build instructions and the security details are in [android/README.md](android/README.md). Each CI run also uploads a debug APK as a downloadable artifact.
 
 ## Requirements
 
@@ -195,7 +184,7 @@ The dot next to the logo shows the connection state: **green** = live, **amber**
 
 When a password is needed for an address (any public URL, or every URL with `AUTH_MODE=all`), the QR code includes a **sign-in token that is valid for 10 minutes**. Scanning it opens ClipBox already logged in, so you never have to type the password on your phone. After it expires, open **Connect** again to get a fresh code.
 
-QR links also end in `#cb1.<server-id>`. Browsers ignore this; the upcoming ClipBox Android app uses it to recognise the server.
+QR links also end in `#cb1.<server-id>`. Browsers ignore this; API clients can use it to recognise the server.
 
 ### Notes
 
@@ -217,22 +206,32 @@ Switch between **Clipboards** and **Notes** in the top bar. Notes have two clear
 - **Conflicts:** if someone else saves a shared note while you're editing it, you choose **Keep mine**, **Use theirs** or **Copy mine**; nothing is silently overwritten. If the note is deleted while you edit, you can save your text as a new note.
 - **Trash & undo (private):** deleted private notes can be undone straight away, and stay in **Trash** for 30 days.
 - **Passphrase lock (private):** click the lock icon in the Private banner to encrypt your private notes in this browser with a passphrase (PBKDF2-SHA256, 600,000 iterations → AES-256-GCM). They lock on every reload and after 10 minutes without activity. Change or remove the passphrase from the ⓘ panel. **A forgotten passphrase can't be recovered**, so back up first.
-- **Backups (private):** use the export ⬇ and import ⬆ buttons in the Private banner. Backups are **encrypted `.cbx` files by default** (same format as the Android app, so they move freely between web and phone); a plain `.json` export is available on request. Import merges by note, keeping the newer copy. If you have 10+ private notes and no recent export, ClipBox reminds you after 30 days.
+- **Backups (private):** use the export ⬇ and import ⬆ buttons in the Private banner. Backups are **encrypted `.cbx` files by default** (so they move freely between browsers and devices); a plain `.json` export is available on request. Import merges by note, keeping the newer copy. If you have 10+ private notes and no recent export, ClipBox reminds you after 30 days.
 
 > **Where private notes live.** They're stored by your browser *for the exact address you opened*. `http://192.168.1.20:3210`, `http://localhost:3210` and your tunnel URL each have their own separate private notes, and so does every browser and private window. Clearing site data deletes them. Safari on iPhone/iPad may erase site data after about 7 days without a visit, unless ClipBox is added to the Home Screen. **Export a backup** now and then, and use a stable address (a DHCP reservation for the server PC helps).
 >
-> **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. For highly sensitive notes, use the [ClipBox Android app](android/README.md), whose code doesn't come from the server.
+> **Honest limit:** private notes are never sent to the server, and other users can't see them. However, the page's code is served by the host, so a host who *modifies* the ClipBox code could read them. Keep highly sensitive secrets in a dedicated password manager.
 
 ### Groups
 
 Groups split one server into separate spaces. Each group has its own clipboards and shared notes; private notes are never part of a group.
 
 - **Everyone** is the default group. Every device sees it, and everything created before groups existed lives there. It can't be deleted.
-- **New groups are invite-only.** As the host, open the group menu next to *Clipboards / Notes* → **Manage groups**, and create one (it starts with a *General* clipboard). Switch a group's access between *Invited only* and *Everyone*, rename it, tick which devices are members, or delete it (this deletes its clipboards, files and shared notes).
-- **Inviting a device:** the QR button on a group (or the *Add the device to* selector under **Connect**) shows a code that signs the new device in **and** adds it to that group. Invitation codes always carry a one-time token, even on the LAN. Browsers and the Android app open the invited group straight away.
-- **From your phone:** if the Android app is the host (connected with the server password), it can manage groups too: **Settings → Manage groups**.
-- **Switching:** use the group menu in the top bar (web) or the group name next to the scan button (Android). Each device remembers the last group it had open.
-- **Who sees what:** a device sees *Everyone*, open groups, and the invite-only groups it's a member of. The host sees every group. For every other device, an invite-only group doesn't exist: its clipboards, notes, files and live updates are never sent, and its URLs answer `404`.
+- **Three kinds of group.** Pick one when you create a group, and change it any time:
+
+  | | Who sees it | How a device gets in |
+  |---|---|---|
+  | **Open** | Every device, directly | Nothing to do |
+  | **Password** | Every device, with a 🔒 *Join* badge | Enter the group password once on that device |
+  | **Invited only** | Only its members | The host ticks it as a member, or it scans the group's invite QR |
+
+  The password is optional: only *Password* groups have one.
+- **Managing groups (host):** open the group menu next to *Clipboards / Notes* → **Manage groups**. Create a group (it starts with a *General* clipboard), rename it, switch its kind, **change its password** (devices that already joined stay in), tick or untick members in any kind of group, or delete it (this deletes its clipboards, files and shared notes).
+- **Joining a password group:** pick it in the group menu and enter the password. Wrong passwords count toward the same rate limit as the server password.
+- **Leaving:** members can leave a password or invite-only group from the group menu.
+- **Inviting a device:** the QR button on a group (or the *Add the device to* selector under **Connect**) shows a code that signs the new device in **and** adds it to that group, which opens straight away. Invitation codes always carry a one-time token, even on the LAN.
+- **Switching:** use the group menu in the top bar. Each browser remembers the last group it had open.
+- **Who sees what:** the host sees every group. Other devices see *Everyone*, open groups, password groups (locked until joined, with none of their content sent), and the invite-only groups they're members of. For everyone else an invite-only group doesn't exist: its clipboards, notes, files and live updates are never sent, and its URLs answer `404`. Group passwords are stored as scrypt hashes and never sent back.
 
 ### Devices & roles
 
@@ -282,8 +281,6 @@ HTTPS_KEY=./192.168.1.20+1-key.pem
 
 Other devices need to trust mkcert's root CA (see the mkcert docs). If they don't, they'll show a certificate warning that you can accept.
 
-**Android app:** with HTTPS enabled, the QR code also carries the certificate's SHA-256 fingerprint (`#cb1.<id>.sha256-…`). The app trusts exactly that certificate, so it works with self-signed certificates without installing a CA, while any other certificate still has to pass normal system validation.
-
 ---
 
 ## Security model
@@ -291,7 +288,7 @@ Other devices need to trust mkcert's root CA (see the mkcert docs). If they don'
 - **LAN vs remote.** A request counts as *local* only when **all** of these are true: it comes straight from a private/loopback IP, it carries no proxy headers (`X-Forwarded-For`, `CF-Connecting-IP`, …), and its `Host` is an IP address, `localhost`, your computer's name, `*.local`, or a name in `LOCAL_HOSTNAMES`. Everything else, including all tunnel traffic, counts as *remote*.
 - **Remote requests always need the password.** If `AUTH_PASSWORD` is empty, they are rejected outright.
 - **Sessions** are HMAC-signed, `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS), tied to a device record, so revoking the device ends the session. **Changing `AUTH_PASSWORD` signs out every browser.** The signing secret lives in `DATA_DIR/secret.key`.
-- **App devices** authenticate with a random 256-bit bearer token issued once at pairing. Only its SHA-256 hash is stored. Revoking the device invalidates the token instantly. App devices keep working through a tunnel even if `AUTH_PASSWORD` is empty, because pairing itself was the authorisation.
+- **API clients** (devices paired with `POST /api/devices/pair`) authenticate with a random 256-bit bearer token issued once at pairing. Only its SHA-256 hash is stored. Revoking the device invalidates the token instantly. They keep working through a tunnel even if `AUTH_PASSWORD` is empty, because pairing itself was the authorisation.
 - **QR pairing tokens** expire after 10 minutes. Each one can register only **one** app device; browsers can reuse it within that window.
 - **Roles** are enforced on the server for every request: viewers can't write, and only hosts can manage devices and groups.
 - **Groups** are enforced on the server too. Every clipboard, item, file and shared-note route checks that the device can see the group, and live events from groups a device can't see are replaced with an empty `skip` event (just the revision number), so not even ids leak.
@@ -346,7 +343,6 @@ test/
   notes.test.mjs                  shared notes API, conflicts, locks, privacy checks
   e2e/notes.e2e.mjs               browser tests (Playwright + Chromium)
   helpers.mjs                     throwaway test server
-android/                          native Android app (see android/README.md)
 docs/plans/                       design documents for upcoming features
 ```
 
@@ -362,13 +358,13 @@ npm run test:e2e  # browser tests in headless Chromium
 
 Set `SCREENSHOTS=some/folder` when running `test:e2e` to save screenshots of each step.
 
-CI runs the checks and API tests on Linux and Windows with Node 20, 22 and 24, the browser tests on Linux, and the Android unit tests plus a debug APK build.
+CI runs the checks and API tests on Linux and Windows with Node 20, 22 and 24, and the browser tests on Linux. Pushing a tag like `v1.5.0` publishes a GitHub Release with that version's changelog.
 
 ### API (for scripting)
 
 Authenticate in one of two ways:
 - **Cookie** (browsers and scripts): writes need the header `X-ClipBox: 1`, and remote requests also need the session cookie from `POST /api/login`.
-- **Bearer token** (apps): pair once, then send `Authorization: Bearer <deviceToken>` on every request. No `X-ClipBox` header is needed.
+- **Bearer token** (scripts and other clients): pair once, then send `Authorization: Bearer <deviceToken>` on every request. No `X-ClipBox` header is needed.
 
 ```
 GET    /api/info                               server id, name, version (no data; no auth)
@@ -381,9 +377,11 @@ DELETE /api/devices/me                         disconnect this device
 
 GET    /api/state                              visible groups, clipboards, notes + {me: {deviceId, role}}
 GET    /api/connect?group=:id                  QR links (a group invitation when `group` is set)
-GET    /api/groups                             visible groups (hosts also get `members`)
-POST   /api/groups              {name, access?}               create  (host)
-PATCH  /api/groups/:id          {name?, access?, members?}    update  (host)
+GET    /api/groups                             visible groups (hosts also get `members`; `locked` = password group not joined)
+POST   /api/groups              {name, access?, password?}    create  (host); access: all | password | members
+PATCH  /api/groups/:id          {name?, access?, members?, password?}  update (host)
+POST   /api/groups/:id/join     {password}                    join a password group
+POST   /api/groups/:id/leave                   leave a group
 DELETE /api/groups/:id                         delete with its content (host)
 POST   /api/clipboards                {name, groupId?}  create (default group if omitted)
 PATCH  /api/clipboards/:id            {name}   rename

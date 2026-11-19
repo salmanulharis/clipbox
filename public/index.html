@@ -218,10 +218,14 @@
       <button class="icon-btn sm" data-close aria-label="Close"><i data-icon="x"></i></button>
     </div>
     <div class="dlg-body">
-      <p class="muted small devices-intro">Groups keep clipboards and shared notes apart, for example <em>Family</em> and <em>Work</em>. A device only sees the groups it belongs to; <strong>Everyone</strong> is visible to all devices. Private notes are never part of a group.</p>
+      <p class="muted small devices-intro">Groups keep clipboards and shared notes apart, for example <em>Family</em> and <em>Work</em>. <strong>Open</strong> groups are visible to every device. <strong>Password</strong> groups show a lock, and anyone who knows the password can join. <strong>Invited only</strong> groups are hidden from everyone but their members. Private notes are never part of a group.</p>
       <ul id="group-list" class="group-list"></ul>
       <form id="group-create" class="group-create" autocomplete="off">
         <input id="group-new-name" class="text-input" maxlength="60" placeholder="New group, e.g. Family" aria-label="New group name">
+        <select id="group-new-access" class="select-input" aria-label="Who can see the new group">
+          <option value="members">Invited only</option><option value="password">Password</option><option value="all">Open</option>
+        </select>
+        <input id="group-new-password" class="text-input" type="password" autocomplete="new-password" maxlength="200" placeholder="Group password" aria-label="Group password" hidden>
         <button type="submit" class="btn primary"><i data-icon="plus"></i><span>Create</span></button>
       </form>
     </div>

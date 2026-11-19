@@ -45,28 +45,3 @@ jobs:
           path: e2e-screenshots
           if-no-files-found: ignore
           retention-days: 7
-
-  android:
-    name: Android app (unit tests + debug APK)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: android
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v5
-      - name: Install Android platform 37
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" > /dev/null
-      - name: Unit tests (core, private-notes privacy guard, network)
-        run: ./gradlew test --console=plain
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --console=plain
-      - uses: actions/upload-artifact@v4
-        with:
-          name: clipbox-android-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 14
